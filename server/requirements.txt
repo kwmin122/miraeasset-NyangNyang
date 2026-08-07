@@ -1,0 +1,10 @@
+# 서버 코어
+fastapi>=0.115
+uvicorn[standard]>=0.30
+httpx>=0.27
+pydantic-settings>=2.4
+
+# 검색 (명섭 임베딩 산출물 구동용 — mock 모드만 쓸 땐 없어도 됨)
+faiss-cpu>=1.8
+sentence-transformers>=3.0
+torch>=2.3

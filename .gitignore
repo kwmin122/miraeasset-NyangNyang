@@ -1,0 +1,18 @@
+# 대용량 데이터 — git에 올리지 않음 (5.2GB corpus + 2.9GB embeddings)
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 환경변수·시크릿 (CLOVA API 키 등)
+.env
+*.pem
+
+# OS
+.DS_Store
+logs/
+docs/*.pdf
+evalset/results_*.jsonl

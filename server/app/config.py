@@ -1,0 +1,28 @@
+# -*- coding: utf-8 -*-
+from pathlib import Path
+
+from pydantic_settings import BaseSettings
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+class Settings(BaseSettings):
+    # mock: 파이프 검증용 가짜 에이전트 | baseline: 검색+HCX(키 없으면 추출형 폴백) | sunwoo: 선우 모듈
+    agent_mode: str = "mock"
+
+    clova_api_key: str = ""
+    clova_base_url: str = "https://clovastudio.stream.ntruss.com"
+    hcx_model: str = "HCX-005"
+
+    emb_dir: Path = REPO_ROOT / "data" / "share_embeddings"
+    log_path: Path = REPO_ROOT / "logs" / "requests.jsonl"
+
+    search_k: int = 5
+    # mps는 Nemotron 커스텀 모델과 libomp 충돌로 segfault → cpu 고정 (NCP도 cpu)
+    search_device: str = "cpu"
+    hcx_timeout_s: float = 60.0
+
+    model_config = {"env_file": REPO_ROOT / ".env", "env_file_encoding": "utf-8"}
+
+
+settings = Settings()
