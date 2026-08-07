@@ -20,7 +20,11 @@ class Settings(BaseSettings):
     search_k: int = 5
     # mps는 Nemotron 커스텀 모델과 libomp 충돌로 segfault → cpu 고정 (NCP도 cpu)
     search_device: str = "cpu"
-    hcx_timeout_s: float = 60.0
+    # S5a: 연결/응답 타임아웃 분리 + 재시도 횟수 (지수 backoff는 hcx.py에서 처리)
+    hcx_connect_timeout_s: float = 5.0
+    hcx_read_timeout_s: float = 30.0
+    hcx_max_retries: int = 1
+    hcx_usage_log_path: Path = REPO_ROOT / "logs" / "hcx_usage.jsonl"
 
     model_config = {"env_file": REPO_ROOT / ".env", "env_file_encoding": "utf-8"}
 

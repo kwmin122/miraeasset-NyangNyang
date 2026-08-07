@@ -4,7 +4,7 @@
 > 역사적 경위·실측 원문은 `docs/LOG.md`, 대회 개요·일정은 `docs/PLAN.md`, 계약은 `docs/SPEC.md`.
 > 새로 투입된 에이전트/세션은 **CLAUDE.md → 이 파일 → 담당 Brief(SLICES.md)** 순으로 읽으면 전체 맥락 확보 완료.
 
-*최종 갱신: 2026-08-08 (Fable, S4 검수 통과 시점 — S5a 검수 중)*
+*최종 갱신: 2026-08-08 (Fable, S5a 검수 통과 시점)*
 
 ## 우리가 누구고 뭘 하는가 (30초 요약)
 
@@ -23,6 +23,7 @@
 - **S3 완료**: 4GB 컨테이너 실측 — **기동 3.8초 OOM(3회+검수 1회 재현 100%)**. 사인은 FAISS 이전, **임베딩 모델 fp32 가중치 로딩 스파이크(651MB→3.4GB/1초)**. colima VM(5.77GiB)은 네이티브 피크 7.33GB 재현 물리적 불가. 부수 발견: torch CPU 미핀 → CUDA 패키지 오설치로 이미지 8.65GB·빌드 57분
 - **S6 완료(잠정 — NCP x86_64 재검증은 S7)**: 다이어트 3종 = bf16 로딩(`low_cpu_mem_usage`) + FAISS SQ8(2.1GB→0.53GB) + chunk_meta SQLite 지연조회. 전부 `server/app/search.py` 몽키패치(data/ 무수정, 산출물 없으면 원본 폴백). **4GB 컨테이너 /ready 200·OOMKilled=false·18문 11/18 동일·retrieved rcept_no 18/18 문항 fp32와 완전 일치**. host RSS 7.37→2.78GiB. 산출물은 `server/artifacts/`(git 제외, `server/tools/build_*.py`로 재생성)
 - **S4 완료**: 평가셋 **36문** = dev 30문(`questions_v1.jsonl`, ①11 ②3 ③3 ④5 ⑤4 ⑥4) + **blind 6문**(`questions_blind.jsonl`, 유형당 1문, **git외·선우 튜닝 비노출** — 과적합 방지 홀드아웃). 전부 원문 XML grep 검증(신규 67개), 정정공시 계보 alt_rcept_no 반영(기존 3문 소급 — TR-NAME-001 recall 0→1.0, T5-C-002 0.5→1.0). 채점기 확장: alt 인정·open must_not(`--legacy-grading` 롤백)·근거표시 참고컬럼. **폴백 기준선 dev 17/30 + blind 3/6 = 20/36** (기존 18문 실패집합 불변 — 회귀 0건). 실패 전부 HCX 필요 카테고리로 분류 완료
+- **S5a 완료**: HCX 클라이언트 골격 — 연결5s/응답30s 타임아웃 분리, 429·5xx·타임아웃 지수 backoff 재시도(1회), 예외 계층(호출부는 `HCXError` 하나만 캐치), `logs/hcx_usage.jsonl` 사용량 로깅(키·프롬프트 원문 절대 미기록), SYSTEM_PROMPT에 기간밖·상장전 거절(채점 마커 문구 강제)+프롬프트공격 무시 규칙, think_trace `[HCX 사용]`/`[폴백 사용]` 태그. 무키 30문 17/30 회귀 0건. **키를 `.env`에 넣는 순간 S5b는 측정만 남음**
 
 ## 알려진 문제 (해결 주체 표시)
 
@@ -68,5 +69,5 @@ docs/           SPEC(계약) PLAN(일정·전략) SLICES(작업큐) WORKFLOW(운
 
 ## 다음 액션 (합의된 순서)
 
-~~S1~~ → ~~S2~~ → ~~S3~~ → ~~S6~~(잠정) → ~~S4~~ 완료.
-**다음: S5a 검수(구현 완료 보고 수신) → S8 문서분(런북·프리즈 체크리스트).** S5b는 CLOVA 키, S7은 NCP 가입 대기(사용자).
+~~S1~~ → ~~S2~~ → ~~S3~~ → ~~S6~~(잠정) → ~~S4~~ → ~~S5a~~ 완료.
+**다음: S8 문서분(런북·프리즈/철수 체크리스트 — NCP 불필요분).** S5b는 CLOVA 키, S7은 NCP 가입 대기(사용자) — 키 없이 할 수 있는 코드 작업은 전부 소진.

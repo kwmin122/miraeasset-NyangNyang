@@ -568,3 +568,29 @@ modified: server/app/hcx.py             ← 내 변경
 ᵇ = blind 6문. 8개 평가기준 커버(신규 18문 기준): 정확성 7 · 할루시네이션 6 · 근거완전성 6 · 요구충족 5 · 추론논리 5 · 안전성 3 · 근거표시 3 · 정보한계 역질문 3 — **8기준 전부 커버** (기존 18문 커버와 합산 시 전 기준 중복 커버). 함정: 프롬프트공격 2 · 정정공시 1 · 사명변경 1 · 상장전 1.
 
 **커밋 대상**: run_eval.py, questions_v1.jsonl, .gitignore, docs 3종. **비커밋(설계)**: questions_blind.jsonl·candidates_s4.jsonl(gitignore — 로컬 유일본, 사용자 백업 필요), results_*.jsonl(git외).
+
+---
+
+### 2026-08-08 — Fable S5a 검수: **통과 (보정 1건 포함) → 커밋**
+
+완료 보고를 신뢰하지 않고 전 항목 재실행. 결과: 보고 내용 전부 사실과 일치, 검수 중 결함 1건 발견·직접 보정.
+
+**1) 재실행 검증 (전부 Fable 직접)**
+- `git grep hcx_timeout_s -- server/` → 0건 (LOG.md 내 언급은 일지 기록이라 정상). 타사 LLM 문자열(openai/gpt/anthropic/gemini 등) server/·evalset/ → 0건.
+- SYSTEM_PROMPT 8번 규칙이 `run_eval.py` LIMIT_MARKERS 4종("확인되지 않"/"확인할 수 없"/"존재하지 않"/"찾지 못")을 그대로 인용함을 대조 확인. 5번째 마커("제공된 공시 데이터")는 0건 검색 폴백 답변에 포함됨(agents.py:56).
+- `.env` 부재·`CLOVA_API_KEY` 미설정 확인 후 포트 8003에서 무키 baseline 기동 → /ready 200 (~10s).
+- **dev 30문 재채점: 17/30 — S4 검수 런과 문항별 판정 diff 0건.** 30/30 응답 5필드 충족, 30/30 think_trace에 `[폴백 사용]` 태그·`0) 질의:` 라인, `[HCX 사용]` 0건(정상).
+- `logs/hcx_usage.jsonl` 미생성 확인 — 키 체크 조기실패로 HTTP 미도달이므로 정상 (파일 기록 로직은 에이전트 목업 검증 + 아래 Fable 목업 재검증으로 커버).
+- 검증 후 서버 종료, 8003 비어있음 확인.
+
+**2) 검수 중 발견·보정한 결함 1건 (hcx.py, Fable 직접 수정 1줄+주석)**
+- 응답 파싱 예외 캐치가 `(ValueError, KeyError)`뿐 → CLOVA가 200인데 `result`가 None/비dict인 기형 응답이면 `TypeError`/`AttributeError`가 HCXError로 안 감싸져 agents.py의 폴백 분기를 건너뜀. main.py `/answer`의 최후방어(`except Exception`)가 있어 **200+5필드는 유지되지만**, retrieved_context가 빈 문자열인 LIMIT_ANSWER로 강등돼 recall을 잃는 품질 저하 경로.
+- 보정: 캐치를 `(ValueError, KeyError, TypeError, AttributeError)`로 확장. 목업 3케이스(result=None / JSON이 리스트 / message가 문자열) 전부 HCXError 래핑 확인. status≠20000용 의도적 HCXError raise는 이 튜플에 안 걸려 기존 동작 유지.
+- 역할 분리 예외 사유: 1줄 방어적 확장이라 에이전트 왕복 비용 > 수정 위험. 검수자 직접 수정으로 기록.
+
+**3) 잔여 리스크 (S5b 이관 — 에이전트 보고와 동일 판단)**
+- `_extract_usage()` 토큰/길이 필드명은 실물 응답 미확인 추정 — S5b 첫 실키 호출 시 `logs/hcx_usage.jsonl` 실측 확인 필수.
+- SYSTEM_PROMPT 8·9번 규칙 실효성(TR-LIM 2문·TR-ATK 2문·T6-O-003)은 무키 상태에서 실행 자체가 안 됨 — S5b 재채점에서 관찰.
+- 429/5xx 재시도 실거동은 실 CLOVA 엔드포인트에서 첫 관측.
+
+**완료 기준 대조**: ②(무키 200+5필드+폴백 구분) 충족 재확인, ④(키·타사 LLM 부재) 충족 재확인. ①③은 S5b 범위. **S5a 종결.**
