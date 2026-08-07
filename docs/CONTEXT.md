@@ -64,10 +64,10 @@
 server/app/     main.py(라우팅) config.py(설정) search.py(검색 래퍼+libomp픽스) agents.py(3모드)
 evalset/        questions_v1.jsonl(dev 30문) questions_blind.jsonl(blind 6문, git외) run_eval.py(채점기)
 data/           corpus/(5.2GB, git외) share_embeddings/(명섭 산출물 2.9GB, git외) — 읽기 전용
-docs/           SPEC(계약) PLAN(일정·전략) SLICES(작업큐) WORKFLOW(운영규칙) LOG(일지) CONTEXT(이 파일)
+docs/           SPEC(계약) PLAN(일정·전략) SLICES(작업큐) WORKFLOW(운영규칙) LOG(일지) CONTEXT(이 파일) RUNBOOK(사수·프리즈·철수)
 ```
 
 ## 다음 액션 (합의된 순서)
 
-~~S1~~ → ~~S2~~ → ~~S3~~ → ~~S6~~(잠정) → ~~S4~~ → ~~S5a~~ 완료.
-**다음: S8 문서분(런북·프리즈/철수 체크리스트 — NCP 불필요분).** S5b는 CLOVA 키, S7은 NCP 가입 대기(사용자) — 키 없이 할 수 있는 코드 작업은 전부 소진.
+~~S1~~ → ~~S2~~ → ~~S3~~ → ~~S6~~(잠정) → ~~S4~~ → ~~S5a~~ → ~~S8 문서분~~(RUNBOOK 골격) 완료.
+**NCP·CLOVA 키 없이 가능한 작업은 전부 소진.** 남은 것은 전부 사용자 차단 항목 해제 대기: S5b(CLOVA 키 — 꽂으면 측정만), S7(NCP 가입+크레딧), S8 본작업(S7 후 리허설). GitHub push·팀 공유도 사용자 액션.
