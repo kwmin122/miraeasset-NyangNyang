@@ -4,7 +4,7 @@
 > 역사적 경위·실측 원문은 `docs/LOG.md`, 대회 개요·일정은 `docs/PLAN.md`, 계약은 `docs/SPEC.md`.
 > 새로 투입된 에이전트/세션은 **CLAUDE.md → 이 파일 → 담당 Brief(SLICES.md)** 순으로 읽으면 전체 맥락 확보 완료.
 
-*최종 갱신: 2026-08-07 (Fable, S1 검수 통과 시점)*
+*최종 갱신: 2026-08-07 (Fable, S2 확정 시점)*
 
 ## 우리가 누구고 뭘 하는가 (30초 요약)
 
@@ -17,9 +17,9 @@
 - FastAPI 서버 3모드: `mock`(더미) / `baseline`(PatchedSearcher 실검색 + 추출형 폴백) / `sunwoo`(선우 모듈 소켓, 계약만 존재)
 - **S1 완료**: 기동 시 백그라운드 사전 로딩 + 카나리 검색 → `GET /ready`(준비 200 / 로딩·실패 503). 콜드스타트 19s 제거 — ready 후 첫 응답 0.17s. mock 모드는 즉시 ready(58MB)
 - 실검색: 로드 17s, 검색 0.6s → 워밍업 후 질의당 0.1~0.2s. `format_context()`가 근거 표기(보고서명·접수일·접수번호) 자동 포함
-- 평가셋 11문(`evalset/questions_v1.jsonl`) — 전부 원문 XML 인용으로 골드 검증됨. 유형 ①②③ + 함정 5종(기간밖·상장전·정정공시·사명변경·프롬프트공격)
-- 채점기(`evalset/run_eval.py`, 표준lib만): **baseline 8/11 통과, 근거 recall 0.8**
-- 채점 실패 3건은 전부 원인 파악됨: 2건은 HCX 미연결이라 거절 불가(기대된 실패), 1건은 진짜 검색 미스(아래 결함 #1)
+- **S2 완료**: 평가셋 **18문**(`evalset/questions_v1.jsonl`) — 전부 원문 XML 인용으로 골드 검증됨. **6유형 전부 커버**(①9 ②1 ③1 ④3 ⑤2 ⑥2) + 함정(기간밖·상장전·정정공시·사명변경·프롬프트공격·동일자 유사공시·접수연도≠기준연도)
+- 채점기(`evalset/run_eval.py`, 표준lib만): **baseline 11/18 통과** (기존 11문 8/11 유지). open은 accept 커버리지 60%, must_not은 closed·공격에서만 작동
+- 실패 7건 전부 원인 파악됨: HCX 미연결 거절 불가 2 + 폴백 비교·연산 불가 3(기대된 실패), 검색 미스 2(LIG 사명 결함 #1, 두산 T5-C-001 복합추론 — HCX 후 재관찰)
 
 ## 알려진 문제 (해결 주체 표시)
 
@@ -55,11 +55,11 @@
 
 ```
 server/app/     main.py(라우팅) config.py(설정) search.py(검색 래퍼+libomp픽스) agents.py(3모드)
-evalset/        questions_v1.jsonl(11문) run_eval.py(채점기)
+evalset/        questions_v1.jsonl(18문) run_eval.py(채점기)
 data/           corpus/(5.2GB, git외) share_embeddings/(명섭 산출물 2.9GB, git외) — 읽기 전용
 docs/           SPEC(계약) PLAN(일정·전략) SLICES(작업큐) WORKFLOW(운영규칙) LOG(일지) CONTEXT(이 파일)
 ```
 
 ## 다음 액션 (합의된 순서)
 
-S1(/ready+사전로딩) → S2(질의셋 12문) → S3(Docker 4GB 실측). 상세 Brief: `docs/SLICES.md`.
+~~S1~~ → ~~S2~~ → **S3(Docker 4GB 실측, 진행 중)** → S3 완료 후 Fable이 S4~S8 상세 Brief 일괄 작성(사용자 지시). 상세: `docs/SLICES.md`.
