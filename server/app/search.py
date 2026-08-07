@@ -2,6 +2,7 @@
 """명섭 임베딩 산출물(search_lib/search_patch) 래퍼. 무거운 import는 첫 검색 때만 (mock 모드는 안 건드림)."""
 import os
 import sys
+import threading
 
 # macOS에서 faiss와 torch가 각자 libomp를 로드해 충돌(segfault)함.
 # 스레드 1개로 제한하면 회피되고, 2vCPU 서버에서도 과다 스레드 방지 효과.
@@ -10,17 +11,22 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 from .config import settings
 
 _searcher = None
+# S1: /ready 백그라운드 워밍업 스레드와 실제 /answer 요청이 동시에 최초 로드를
+# 시도하면 이중 로딩(메모리 2배)이 된다. 이 락 하나로 모든 호출자를 직렬화한다.
+_searcher_lock = threading.Lock()
 
 
 def get_searcher():
     global _searcher
     if _searcher is None:
-        emb = str(settings.emb_dir)
-        if emb not in sys.path:
-            sys.path.insert(0, emb)
-        from search_patch import PatchedSearcher  # noqa: PLC0415
+        with _searcher_lock:
+            if _searcher is None:
+                emb = str(settings.emb_dir)
+                if emb not in sys.path:
+                    sys.path.insert(0, emb)
+                from search_patch import PatchedSearcher  # noqa: PLC0415
 
-        _searcher = PatchedSearcher(device=settings.search_device)
+                _searcher = PatchedSearcher(device=settings.search_device)
     return _searcher
 
 
