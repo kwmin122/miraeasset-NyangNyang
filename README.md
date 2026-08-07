@@ -63,5 +63,6 @@ python3 evalset/run_eval.py            # questions_v1.jsonl 전체 채점
 
 2vCPU/4GB (주최측 권장 스펙), Docker + 볼륨 마운트, HTTP 우선 (HTTPS는 주최측 재공지 대기).
 자세한 계획: `docs/PLAN.md`, 경계 계약: `docs/SPEC.md`.
+작업 방식(Fable=계획·검증/Sonnet=구현): `docs/WORKFLOW.md`, 작업 큐: `docs/SLICES.md`, 일지: `docs/LOG.md`.
 
 **주의:** 9/6 제출 프리즈 후 재배포 금지, 9/7~9/20 서버 사수, 9/30 전 NCP 리소스 전부 삭제.
