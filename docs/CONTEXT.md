@@ -4,7 +4,7 @@
 > 역사적 경위·실측 원문은 `docs/LOG.md`, 대회 개요·일정은 `docs/PLAN.md`, 계약은 `docs/SPEC.md`.
 > 새로 투입된 에이전트/세션은 **CLAUDE.md → 이 파일 → 담당 Brief(SLICES.md)** 순으로 읽으면 전체 맥락 확보 완료.
 
-*최종 갱신: 2026-08-07 (Fable, S3 검수 통과 + S4~S8 Brief 작성 시점)*
+*최종 갱신: 2026-08-08 (Fable, S6 검수 통과 시점 — S4 진행 중)*
 
 ## 우리가 누구고 뭘 하는가 (30초 요약)
 
@@ -21,6 +21,7 @@
 - 채점기(`evalset/run_eval.py`, 표준lib만): **baseline 11/18 통과** (기존 11문 8/11 유지). open은 accept 커버리지 60%, must_not은 closed·공격에서만 작동
 - 실패 7건 전부 원인 파악됨: HCX 미연결 거절 불가 2 + 폴백 비교·연산 불가 3(기대된 실패), 검색 미스 2(LIG 사명 결함 #1, 두산 T5-C-001 복합추론 — HCX 후 재관찰)
 - **S3 완료**: 4GB 컨테이너 실측 — **기동 3.8초 OOM(3회+검수 1회 재현 100%)**. 사인은 FAISS 이전, **임베딩 모델 fp32 가중치 로딩 스파이크(651MB→3.4GB/1초)**. colima VM(5.77GiB)은 네이티브 피크 7.33GB 재현 물리적 불가. 부수 발견: torch CPU 미핀 → CUDA 패키지 오설치로 이미지 8.65GB·빌드 57분
+- **S6 완료(잠정 — NCP x86_64 재검증은 S7)**: 다이어트 3종 = bf16 로딩(`low_cpu_mem_usage`) + FAISS SQ8(2.1GB→0.53GB) + chunk_meta SQLite 지연조회. 전부 `server/app/search.py` 몽키패치(data/ 무수정, 산출물 없으면 원본 폴백). **4GB 컨테이너 /ready 200·OOMKilled=false·18문 11/18 동일·retrieved rcept_no 18/18 문항 fp32와 완전 일치**. host RSS 7.37→2.78GiB. 산출물은 `server/artifacts/`(git 제외, `server/tools/build_*.py`로 재생성)
 
 ## 알려진 문제 (해결 주체 표시)
 
@@ -30,7 +31,8 @@
 | 2 | chunk_id 중복 11,048개 (257,186행 중 246,138 유니크) — 골드가 chunk_id 못 믿음 → rcept_no+인용 기준으로 이미 우회 | **명섭에게 확인 요청 대기** |
 | 3 | correction_map.json `superseded_by`가 리스트 값 599건 — 소비 코드가 문자열 가정하면 깨짐 | 명섭에게 같이 전달 |
 | 4 | ~~콜드스타트 19s~~ | **해결됨 (S1, 2026-08-07)** |
-| 5 | 4GB RAM 초과 — 네이티브 7.33GB + **Docker 4GB에서 기동 3.8초 OOM 확정(S3). 사인=임베딩 모델 fp32 로딩 스파이크** | **S6 발동 확정 — 1순위 모델 로딩(mmap/dtype), 2순위 FAISS SQ8, 3순위 meta→SQLite** |
+| 5 | 4GB RAM 초과 — 네이티브 7.33GB + Docker 4GB 기동 3.8초 OOM (S3) | **해결됨(잠정) — S6 다이어트 3종 (2026-08-08). aarch64 실측 통과, x86_64(NCP) 재검증은 S7** |
+| 7 | 이미지 11.1GB (torch CUDA 오설치 + artifacts 1.7GB) — RSS와 무관, 디스크·빌드시간 문제 | S7에서 torch CPU 핀 + NCP 빌드 시 재검토 |
 | 6 | macOS에서 faiss↔torch libomp 충돌 세그폴트 | 해결됨 (`OMP_NUM_THREADS=1`+cpu, 제거 금지) |
 
 ## 사용자(민경욱) 대기 항목 — 코드로 해결 불가
@@ -63,5 +65,5 @@ docs/           SPEC(계약) PLAN(일정·전략) SLICES(작업큐) WORKFLOW(운
 
 ## 다음 액션 (합의된 순서)
 
-~~S1~~ → ~~S2~~ → ~~S3~~ 완료. S4~S8 상세 Brief 작성 완료(SLICES.md).
-**다음: S6(다이어트 — 최우선, 안 되면 전부 무의미) ∥ S4(36문 확장) 병행 가능.** S5는 CLOVA 키, S7은 NCP 가입 대기(사용자).
+~~S1~~ → ~~S2~~ → ~~S3~~ → ~~S6~~(잠정) 완료. S4~S8 상세 Brief 작성 완료(SLICES.md).
+**다음: S4(36문 확장 — 진행 중) ∥ S5a(HCX 골격, 키 불필요 — S6 완료로 착수 가능) ∥ S8 문서분(런북·프리즈 체크리스트).** S5b는 CLOVA 키, S7은 NCP 가입 대기(사용자).

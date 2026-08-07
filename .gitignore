@@ -16,3 +16,7 @@ venv/
 logs/
 docs/*.pdf
 evalset/results_*.jsonl
+
+# S6 다이어트 산출물 — 대용량 바이너리(sqlite 1.19GB가 GitHub 100MB 한도 초과, git-lfs 미도입).
+# server/tools/build_*.py 로 언제든 재생성 가능 (NCP 배포 시 S7에서 재생성).
+server/artifacts/

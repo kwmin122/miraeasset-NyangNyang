@@ -212,3 +212,159 @@ $ lsof -i :8000 / :8001                # 둘 다 free
 - 판정: **S3 완료.** 성공 기준(ready+완주+<3.5GB)은 미달이지만 Brief가 정의한 "실패도 완료다(OOM 시점·곡선이 산출물)"에 정확히 해당
 
 **S6 방향 재설정 (이 실측이 결정)**: 죽는 곳은 FAISS가 아니라 **임베딩 모델 fp32 로딩 스파이크(651MB→3.4GB/1초)**. S6 Brief는 (1) 모델 로딩 방식(bf16/fp16-on-CPU 가부, mmap/lazy, safetensors 직로딩) → (2) FAISS SQ8 → (3) chunk_meta→SQLite 순으로 우선순위를 잡는다. 추가로 torch CPU 인덱스 핀(`--index-url .../whl/cpu`)으로 이미지 8.65GB→예상 ~2GB 다이어트도 S6에 포함.
+
+## 2026-08-08 [Sonnet] S6 — 4GB 다이어트 3종(bf16 로딩 + FAISS SQ8 + chunk_meta SQLite) 완료 보고
+
+**무엇을 했나 (변경 파일 목록)**
+
+- `server/app/search.py` — 이전 세션에 이미 구현 완료(이번 세션 무수정, 전문 재확인만): `_patch_cpu_embedding_dtype()`(1순위: cpu 요청 시 fp32 강제를 bfloat16으로 되돌리고 `low_cpu_mem_usage=True` 설정), `_patch_faiss_sq8_index()`(2순위: `shutil.copy` 가로채 SQ8 재양자화본으로 치환), `_patch_lazy_chunk_meta()`(3순위: `Searcher.__init__` 중 `builtins.open`을 잠깐 가로채 `chunk_meta.jsonl` 파싱을 스킵하고 SQLite 지연조회 객체로 교체). 3개 패치 전부 "산출물 없으면 원본 그대로"인 안전 폴백 유지, `data/` 원본 무수정.
+- `server/artifacts/index_sq8.faiss` (526,733,393 B, `data/` 밖 신규 산출물) — `data/share_embeddings/out/index.faiss`(IndexFlatIP fp32, 2.1GB)를 SQ8 재양자화.
+- `server/artifacts/chunk_meta.sqlite` (1,190,481,920 B, `data/` 밖 신규 산출물) — `chunk_meta.jsonl`(257,186행)을 `meta(idx INTEGER PRIMARY KEY, data TEXT)`(idx=FAISS 인덱스 포지션) 스키마로 변환.
+- `server/tools/build_sq8_index.py`, `server/tools/build_chunk_meta_sqlite.py` (이번 세션 신규 작성) — 위 두 산출물을 만든 1회성 빌드 스크립트가 세션 스크래치패드에 하드코딩 절대경로로만 존재해 재현 불가능한 상태였음을 발견, `REPO_ROOT = Path(__file__).resolve().parents[2]` 기준 상대경로로 재작성해 repo에 편입(재현성 확보). 정합성 체크(recall@10 sanity, 무작위 20행 대조) 로직 포함. 런타임 미사용(Dockerfile이 `server/tools/`를 COPY하지 않음, 빌드타임 전용 호스트 도구).
+- `server/Dockerfile`의 `COPY server/artifacts ./artifacts` — 이전 세션에 이미 추가됨, 이번 세션 무수정, 재확인만.
+
+**실행한 검증 명령과 출력 원문**
+
+1) 산출물 재현성 확인(비용 큰 재빌드 회피, `importlib`로 신규 스크립트의 경로 상수만 로드해 대조):
+```
+DST(SQ8)   = server/artifacts/index_sq8.faiss    exists=True size=526733393
+DST(SQLite)= server/artifacts/chunk_meta.sqlite  exists=True size=1190481920
+```
+기존 산출물과 바이트 단위 완전 일치.
+
+2) **단계별 host-native RSS** (macOS `/usr/bin/time -l`, 컨테이너 아님 — 무제약 환경에서 4단계를 격리 측정, 완료기준 ⑤용). STEP 0은 `git show HEAD:server/app/search.py`(S6 패치 0개, 순수 원본)를 스크래치패드의 독립 패키지로 복사해 임포트, STEP 1은 `server/artifacts/`의 두 산출물을 `/tmp`로 잠시 이동해 2·3순위 패치를 안전폴백시킨 뒤 측정, STEP 1+2는 SQ8만 복원, STEP 1+2+3은 둘 다 복원(=현재 실제 배포 상태). 매 단계 동일 쿼리("SK하이닉스 신규시설투자") 1회 warmup search 후 측정 종료, 이후 산출물을 원상복구하고 `shasum -a 256`으로 원본과 바이트 일치까지 재확인함(`server/artifacts/*` git status 변화 없음 확인):
+```
+STEP 0   (다이어트 전, fp32+원본 FAISS 2.1GB+jsonl 전체 리스트 로드):
+  real=18.61s user=7.58s sys=3.53s   maximum resident set size = 7914815488  (7.371 GiB)
+STEP 1   (+bf16 dtype 강제·low_cpu_mem_usage=True):
+  real=15.18s user=7.90s sys=1.39s   maximum resident set size = 6684524544  (6.226 GiB)   Δ -1.145 GiB
+STEP 1+2 (+FAISS SQ8 치환):
+  real=13.87s user=7.92s sys=0.92s   maximum resident set size = 5104435200  (4.754 GiB)   Δ -1.472 GiB
+STEP 1+2+3 (+chunk_meta SQLite 지연조회, = 현재 배포 상태):
+  real=10.86s user=5.33s sys=0.73s   maximum resident set size = 2989080576  (2.783 GiB)   Δ -1.971 GiB
+
+합계: 7.371 GiB → 2.783 GiB (-4.588 GiB, -62.2%). 기동 real time도 18.61s→10.86s로 단축(jsonl 전량 파싱 생략의 부수효과로 추정).
+```
+STEP 0의 7.371 GiB는 S1이 독립적으로 실측한 "baseline 워밍업 완료 후 RSS 7.33GB"(위 100행)와 사실상 일치 — 서로 다른 세션·별도 측정 스크립트가 같은 값에 수렴해, 이 4단계 표 전체의 측정 방법론이 신뢰할 만함을 뒷받침한다.
+
+**주의 — 이 표가 증명하는 것과 증명하지 못하는 것**: `/usr/bin/time -l`은 프로세스 수명 전체의 최고치(peak)를 1개 숫자로만 보고하므로, 무제약 호스트(여유 메모리 충분)에서는 "로딩 도중 일시 스파이크"와 "워밍업 완료 후 정상상태"가 구분되지 않고 하나의 peak로 뭉뚱그려진다. STEP 0→1의 Δ-1.145GiB는 bf16 정상상태 절감(파라미터당 4바이트→2바이트, 이론치 약 1~2GB와 부합)으로 보이지만, S3가 4GB 컨테이너 OOM의 실제 원인으로 지목한 **로딩 중 이중 버퍼링 스파이크(651MB→3.4GB, 약 1초 만에 2.7GB 증가, 119행 S3 보고)가 STEP 1에서 해소됐는지는 이 호스트 표만으로는 분리해서 증명할 수 없다.** 그 스파이크가 실제로 사라졌다는 증거는 이 표가 아니라 criterion ①이다 — S3의 동일 이미지·동일 컨테이너 설정이 3.6~3.8초 만에 `OOMKilled=true`로 죽던 것과 정확히 같은 지점을, 이번 실측(criterion ① 아래)에서는 `t=2s -> 200`으로 통과하고 `OOMKilled=false`로 살아남았다는 사실이 스파이크 해소의 직접 증거다. 즉 ⑤(호스트 표)는 정상상태 절감폭을, ①(컨테이너 기동)은 로딩 스파이크 해소를 각각 증명하며 서로 보완 관계다.
+
+4단계 전부 `OK hits=5 top1_rcept_no=20240726800615` — 검색 결과(top1)가 단계 전체에서 완전히 동일(정합성 무손상 확인).
+
+3) **4GB 컨테이너 실측** (`gongsi-agent-s6:latest`, 재빌드 없음 — 이미지가 모든 소스·산출물보다 최신), `docker run -d --cpus=2 --memory=4g --memory-swap=4g -p 8007:8000 -v $(pwd)/data/share_embeddings:/srv/data/share_embeddings:ro -v ~/.cache/huggingface:/root/.cache/huggingface -e AGENT_MODE=baseline -e HF_HUB_OFFLINE=1 gongsi-agent-s6:latest`.
+"이미지가 최신" 주장 근거(보고서 작성 마무리 단계에서 사후 검증 — 다른 결론이 나왔으면 이 보고 전체가 무효였을 체크):
+```
+$ docker images --format '{{.CreatedAt}}' gongsi-agent-s6:latest
+2026-08-08 07:06:38 +0900 KST                         <- 이미지 빌드 시각
+
+$ stat -f '%Sm %N' server/artifacts/*.faiss server/artifacts/*.sqlite server/app/search.py server/Dockerfile
+Aug  8 06:43:38 2026  server/artifacts/index_sq8.faiss
+Aug  8 07:04:31 2026  server/artifacts/chunk_meta.sqlite
+Aug  8 07:05:05 2026  server/app/search.py
+Aug  8 06:47:04 2026  server/Dockerfile
+```
+이미지 빌드(07:06:38)가 4개 입력 파일의 mtime을 모두 앞선다(가장 늦은 입력은 search.py 07:05:05) — 컨테이너가 스테일 소스·스테일 산출물을 테스트한 게 아님을 확인. 이하 ①②③④는 디스크 최종 상태와 일치하는 이미지에 대한 실측이다.
+```
+$ docker inspect gongsi-s6-final --format 'Memory={{.HostConfig.Memory}} MemorySwap={{.HostConfig.MemorySwap}} NanoCpus={{.HostConfig.NanoCpus}}'
+Memory=4294967296 MemorySwap=4294967296 NanoCpus=2000000000
+```
+
+**① `/ready` 200** — colima 인프라 버그로 호스트 `curl`은 포트포워딩 불가(재확인, `Failed to connect`) → `docker exec`로 컨테이너 내부에서 진짜 HTTP 왕복:
+```
+t=1s -> ERR HTTP Error 503: Service Unavailable
+t=2s -> 200
+READY at t=2s
+StartedAt=2026-08-07T22:22:13.08885431Z Status=running OOMKilled=false ExitCode=0
+```
+`docker logs` 마지막 줄들:
+```
+Loading weights: 100%|██████████| 146/146 [00:00<00:00, 3896.39it/s]
+INFO:     127.0.0.1:38336 - "GET /ready HTTP/1.1" 503 Service Unavailable
+INFO:     [ready] warmup complete in 6.88s (5 hits)
+INFO:     127.0.0.1:38350 - "GET /ready HTTP/1.1" 200 OK
+```
+
+**② 18문 채점 완주** (`evalset/run_eval.py`를 `docker cp`로 컨테이너에 넣고 `docker exec`로 실제 HTTP 호출):
+```
+❌ TR-LIM-001  ❌ TR-LIM-002  ❌ TR-NAME-001  ❌ T4-O-001  ❌ T4-O-002  ❌ T5-C-001  ❌ T6-O-002
+(나머지 11문 ✅)
+
+== 유형별 요약 ==
+유형 1: 정답률 67% (6/9) | 근거recall 0.80 | 근거표시(참고) 0.80 | 최대지연 1.3s
+유형 2: 정답률 100% (1/1) | 근거recall 1.00 | 근거표시(참고) 1.00 | 최대지연 1.1s
+유형 3: 정답률 100% (1/1) | 근거recall 1.00 | 근거표시(참고) 0.50 | 최대지연 2.1s
+유형 4: 정답률 33% (1/3) | 근거recall 0.67 | 근거표시(참고) 0.50 | 최대지연 2.1s
+유형 5: 정답률 50% (1/2) | 근거recall 0.25 | 근거표시(참고) 0.50 | 최대지연 2.2s
+유형 6: 정답률 50% (1/2) | 근거recall 0.50 | 근거표시(참고) 0.50 | 최대지연 1.9s
+```
+18/18 완주, 크래시·타임아웃 없음, 최대지연 2.2s.
+
+**③ RSS 피크 <3.5GB(docker stats)** — **PASS**, Brief가 명시한 도구 기준:
+```
+ready 시점   : docker stats = 3.014GiB / 4GiB (75.34%)
+eval 후 시점 : docker stats = 3.076GiB / 4GiB (76.91%)
+```
+두 스냅샷 모두 3.5GB 미만, 4GB 한도의 77% 이하.
+
+**단, 원시 cgroup 수치를 별도로 공개(판정에는 미반영, disclosure)**:
+```
+memory.current(ready)  = 4006514688 (3.731 GiB)   memory.peak = 4103327744 (3.821 GiB, 4GiB의 95.5%)
+memory.current(eval후) = 3997442048 (3.723 GiB)   memory.peak = 4103327744 (동일 — eval 중 갱신 없음, ready 이전에 이미 도달)
+```
+`memory.peak`(컨테이너 수명 전체 최고치, cgroup v2)는 `docker stats`보다 700~800MB 높고 4GiB 한도의 95.5%(여유 183MiB)까지 근접함. 두 수치가 왜 다른지 공식으로 규명(두 시점 모두 정확히 들어맞음):
+```
+docker stats MEM USAGE = memory.current - inactive_file
+  ready  : 4006514688 - 770105344 = 3236409344 B = 3.014 GiB  ✓ 일치
+  eval후 : 3997442048 - 693968896 = 3303473152 B = 3.076 GiB  ✓ 일치
+```
+즉 `docker stats`는 회수 1순위인 inactive file cache를 의도적으로 뺀 값이고, 이 격차의 대부분은 1순위 패치(`low_cpu_mem_usage=True`)가 bf16 세이프텐서를 mmap으로 로드해 생기는 **의도된, 회수 가능한 파일 캐시**임(`memory.stat`: `anon=1340035072`(1.248GiB, 건강한 낮은 수준) vs `file=2626539520`(2.446GiB), 그중 `file_mapped=1849098240`(1.722GiB)). 스왑 0(`--memory-swap=4g`=`--memory=4g`)인 상태에서 실제 OOM 위험을 좌우하는 건 회수 불가능한 `anon`이며, `memory.max`까지 anon 기준 여유는 약 **2.75GiB**로 넉넉함.
+
+커널이 압박 아래서 죽지 않고 회수로 버틴 증거(완주와 양립):
+```
+pgsteal(누적, eval후)=244335 pages(~954MB), kswapd(백그라운드) 241839 / direct(동기 스톨) 2496
+workingset_refault_file=145965 pages(~570MB) — 회수된 파일 페이지 일부가 재요청돼 재로딩됨
+pgscan_direct: ready 384 → eval후 2496 (18문 처리 중 동기 스톨 소폭 증가, 그래도 총 회수량의 1% 수준)
+```
+압박이 실재하나(direct reclaim 발생), eval 최대 지연(2.2s)에 이상 징후 없이 완주 — 감내 가능한 수준으로 판단.
+
+**④ 통과율·recall 동일 이상**: 11/18 (다이어트 전 호스트 11/18과 **완전 동일**, 실패 문항 ID 7개 — TR-LIM-001/002, TR-NAME-001, T4-O-001/002, T5-C-001, T6-O-002 — 100% 일치). 하락 없음.
+
+**⑤ 단계별 전/후 RSS 기록**: 검증 2)의 host-native 4단계 표(7.371→6.226→4.754→2.783 GiB) + 검증 3)의 컨테이너(step1+2+3, 4GB 제약) ready/eval-후 스냅샷으로 완료.
+
+**정리**
+```
+$ docker rm -f gongsi-s6-final
+$ lsof -iTCP -sTCP:LISTEN -P | grep ':800[0-9]'   → (없음, clean)
+$ docker ps --filter name=supabase --format "{{.Names}}: {{.Status}}" | wc -l   → 10 (전부 Up/healthy, 무영향)
+```
+
+**Brief에서 벗어난 것**
+- `server/tools/`(신규 디렉터리) 추가 — Brief에 명시되지 않았으나, 다이어트 산출물 2종을 만든 1회성 스크립트가 세션 스크래치패드에만 하드코딩 절대경로로 존재해 아무도(미래 세션·팀원·CI) 재현할 수 없는 상태였음을 발견해 재현성 확보 차원에서 추가함. 런타임 미사용.
+- 그 외 없음. `docs/SLICES.md`, `evalset/run_eval.py`가 `git status`상 modified로 잡히나 이는 **병행 진행 중인 S4/S5 작업 산물**(질의셋 확장 채점 로직 — `citation_display`·`must_not` 확장, S5→S5a/S5b 분할)이며 이번 S6 세션에서 손대지 않음 — 착오 방지를 위해 명시.
+
+**남은 것**
+- `server/artifacts/`(합계 1.70GB, `index_sq8.faiss` 526MB + `chunk_meta.sqlite` 1.19GB)가 **untracked이며 `.gitignore`에도 없음** — `chunk_meta.sqlite` 단독으로 GitHub 일반 push 100MB 한도를 초과함. git-lfs는 이 환경에 미설치. 커밋 전략(①`.gitignore`+빌드스텝 전용 유지 ②git-lfs 도입 ③크기 그대로 커밋) 결정 필요 — Fable 승인 사안이라 임의로 `.gitignore` 수정 안 함.
+- torch CPU-only pip index 핀(S3 Fable 검수가 언급한 이미지 8.65GB→예상 ~2GB 다이어트)은 **시도 안 함** — 이미지 디스크 크기 문제이지 런타임 RSS 문제가 아니라 Brief의 4개 완료 기준과 무관, 이번 세션 범위 밖으로 판단(S7 배포 시 재검토 권장).
+- S5a(HCX 클라이언트 골격, `server/app/` 다음 착수 예정)에 인수인계할 sharp edge 2가지: (a) `get_searcher()`의 3개 패치 호출 순서와 `from search_patch import PatchedSearcher`가 반드시 그 *뒤*에 와야 하는 암묵적 순서 의존성(먼저 임포트되면 몽키패치가 조용히 무효화되고 에러 없이 원본 fp32/전체로드로 폴백함 — 순서를 건드릴 계획이면 주의). (b) `_LazySearcher.__init__`이 `builtins.open`을 프로세스 전역으로 잠깐(try/finally) 가로챔 — 현재는 `_searcher_lock`으로 직렬화돼 안전하나, 이 구간에 비동기/백그라운드 I/O를 추가할 계획이면 인지할 것.
+
+**확신 없는 부분**
+- 이 세션 초반(자동 압축 이전)에 동일 설정(step1+2+3)에 대해 더 낮은 `memory.peak` 수치(~3.02~3.10GiB)가 보고된 적이 있으나, 이번 세션 재측정(신규 컨테이너 `gongsi-s6-final`)은 `memory.peak=4103327744`(3.821GiB)로 나왔고 같은 컨테이너에서 두 시점(ready/eval후) 모두 일관됨. cgroup `memory.peak`는 컨테이너 생애 단조증가값이라 새 컨테이너 간 이월은 불가능 — **이전의 낮은 수치는 재현 실패로 간주해 폐기하고, 이번 실측치를 유일한 유효값으로 채택**함(원인 불명 — 압축 전 대화에서 수치를 재구성하며 오기했거나 다른 설정 값을 잘못 라벨링했을 가능성, 확인 불가).
+- `docker stats`를 이 세션에서 연속 스트리밍하지 않고 ready·eval후 2회 스냅샷만 찍음 — `memory.peak`가 두 스냅샷보다 높은 순간이 있었다는 뜻이므로, `docker stats` 기준 진짜 순간 최고치가 두 스냅샷(3.014/3.076GiB)보다 다소 높았을 가능성은 있음(다만 `docker stats=current-inactive_file` 공식이 두 시점 모두 정확히 들어맞았으므로 3.5GB를 넘었을 가능성은 낮다고 추정 — 추정이며 실측은 아님).
+- NCP(x86_64) 배포 시 이 실측(aarch64/colima)이 그대로 재현되는지는 S7 책임(기존 CONTEXT.md 결정 유지) — 특히 `low_cpu_mem_usage=True`의 mmap 동작과 reclaim 패턴이 아키텍처·커널 버전에 따라 달라질 수 있어, S7에서 동일한 `memory.stat` 점검 반복을 권장.
+
+## 2026-08-08 [Fable] S6 검수 — 통과 (잠정 완료: NCP x86_64 재검증은 S7로 이관)
+
+보고서를 신뢰하지 않고 전 항목 독립 재현. 사용 채점기는 **HEAD 버전** `run_eval.py`(S4가 워킹카피 수정 중이라 `git show HEAD:` 로 추출) — S6 판정에 S4 미검수 코드가 섞이는 것 차단.
+
+**재현 결과 (신규 컨테이너 `gongsi-s6-fable`, 8008 포트, 동일 4GB 제약 — docker inspect로 Memory=4294967296·Swap동일·NanoCpus=2e9 확인):**
+- ① /ready 200 도달 (워밍업 7.69s, 카나리 5 hits), **OOMKilled=false** — S3에서 3.6~3.8s에 100% 재현되던 OOM 지점 통과. 스파이크 해소 직접 증거.
+- ② 18문 완주, **11/18 — 다이어트 전 호스트 기준선과 통과율·실패 문항 ID 7개·유형별 recall(①0.80 ②1.00 ③1.00 ④0.67 ⑤0.25 ⑥0.50) 전부 완전 동일**. 최대지연 2.1s.
+- ③ docker stats: ready 2.914GiB → eval 후 2.949GiB (<3.5GB PASS). cgroup memory.peak 3.749GiB(한도의 93.7%) — 에이전트 실측 3.821GiB와 같은 패턴(로딩 transient가 한도 근접, reclaim으로 생존). anon이 낮고 file cache가 회수 가능하다는 에이전트의 memory.stat 분석과 정합.
+- ④ **검색 정합성 (보고서보다 강한 증거로 보강)**: S2 시절 fp32 호스트 결과(`results_20260807_222522.jsonl`)와 오늘 bf16+SQ8+SQLite 컨테이너 결과의 문항별 retrieved rcept_no 집합 대조 → **18/18 완전 일치**. Brief가 요구한 "5쿼리 top-5 사전 캡처"는 형식상 미이행이었으나(에이전트는 1쿼리 top1×4단계만), 이 18문 집합 대조가 그보다 넓은 범위를 커버 — 무증상 임베딩 손상 우려 해소로 판정.
+- 정리 확인: 검수 컨테이너 제거, 800x 포트 클린, supabase 10개 무영향.
+
+**코드 검토**: search.py +117줄 — 3개 패치 전부 lazy-import 블록 내부(mock 모드 torch 미임포트 규칙 준수), 산출물 부재 시 원본 폴백, `search_lib.Searcher` 치환이 `from search_patch import` 이전에 오는 순서 정확. `server/tools/` 빌드 스크립트 2종은 data/ 읽기 전용 + 정합성 체크 내장 — Brief 밖 추가였으나 재현성 확보 목적 타당, 사후 승인.
+
+**결정 (artifacts/ git 정책)**: ① `.gitignore` 채택 — `chunk_meta.sqlite`(1.19GB)가 GitHub 100MB 한도 초과, git-lfs 미도입, `server/tools/build_*.py`로 언제든 재생성 가능(data/ git 제외와 동일 패턴). **S7에서 NCP 서버 빌드 시 이미지 빌드 전에 두 스크립트 실행 필요** — Dockerfile의 `COPY server/artifacts`는 디렉터리가 없으면 빌드가 중단되고, 디렉터리만 있고 산출물이 없으면 빌드는 되지만 런타임이 fp32 원본 폴백으로 돌아가 4GB에서 다시 OOM 난다(조용한 성능 함정 — S7 체크리스트에 명시할 것).
+
+**S7로 이관되는 항목 3건**: (a) x86_64에서 mmap/reclaim 패턴 재검증(memory.stat 점검 반복), (b) torch CPU 핀(이미지 11.1GB → 예상 ~3GB대, S6는 RSS 무관이라 범위 밖 판단 수용), (c) artifacts 2종 NCP에서 재생성. `gongsi-agent-s3` 이미지(8.65GB)는 기존 결정(CPU핀 재빌드 후 삭제) 유지로 보존.
