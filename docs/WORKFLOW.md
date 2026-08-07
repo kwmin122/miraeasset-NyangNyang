@@ -9,17 +9,31 @@
 |---|---|---|
 | 하는 일 | Brief 작성, 역설명 승인, 완료 검수, **질의셋 골드 최종 확정** | 코드 작성, 테스트 실행, 후보 발굴, 측정, 보고 |
 | 호출 시점 | 슬라이스당 2~3회: ①Brief ②역설명 승인 ③완료 검수 | 슬라이스 진행 전체 |
-| 읽는 것 | `docs/LOG.md` 최신 항목 + git diff | `CLAUDE.md` + `docs/SLICES.md`의 해당 Brief (전체 히스토리 불필요) |
+| 읽는 것 | `docs/LOG.md` 최신 항목 + git diff | `CLAUDE.md` + `docs/CONTEXT.md` + 담당 Brief (전체 히스토리 불필요) |
 
-## 2. 슬라이스 루프
+## 2. 실행 방식 (기본): Fable이 Sonnet을 에이전트로 호출
+
+사용자가 세션을 왔다갔다 하지 않는다. **Fable 세션 하나에서** Fable이 Agent 도구(model=sonnet)로
+Sonnet을 스폰해 구현시키고, 결과를 Fable이 직접 검증한다.
 
 ```
-Fable: Brief 작성 (SLICES.md에 기록)
-  → Sonnet: 역설명 출력 (코드 만지기 전)
-  → 사용자/Fable: 승인
-  → Sonnet: 구현 + 자체 테스트
-  → Sonnet: 완료 보고 (LOG.md에 append)
-  → Fable: 독립 검수 → 통과 시 슬라이스 완료 표시
+사용자: "S1 진행해"  (Fable 세션에서)
+  → Fable: Sonnet 에이전트 스폰 — 1차 지시 = "Brief 읽고 역설명만, 코드 금지"
+  → Sonnet: 역설명 반환
+  → Fable: Brief와 대조 → 어긋나면 교정 지시, 맞으면 같은 에이전트에 "승인, 구현 진행"
+  → Sonnet: 구현 + 자체 테스트 + 완료 보고(LOG.md append) 후 종료
+  → Fable: 독립 검수 (§6) → 통과 시 SLICES 보드·CONTEXT.md 갱신 + 커밋
+```
+
+- 역설명과 구현은 **같은 에이전트**로 이어간다 (맥락 유지). 새 슬라이스 = 새 에이전트.
+- 대안 모드(Fable 없이 절약): 사용자가 별도 Sonnet 세션에서 직접 진행하는 것도 유효 —
+  이때 역설명 승인은 사용자가 Brief와 눈으로 대조하고, 검수만 나중에 Fable 세션에 요청.
+
+## 2b. 슬라이스 루프 (모드 무관 공통)
+
+```
+Brief 작성(Fable) → 역설명(Sonnet) → 승인 → 구현+자체테스트(Sonnet)
+  → 완료 보고(LOG.md) → 독립 검수(Fable) → 보드·CONTEXT 갱신 + 커밋
 ```
 
 ## 3. 역설명 (Sonnet, 구현 착수 전 필수)
