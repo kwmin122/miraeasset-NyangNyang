@@ -1,0 +1,9 @@
+data/
+.venv/
+.git/
+logs/
+docs/
+evalset/results_*.jsonl
+__pycache__/
+*.pyc
+.env
