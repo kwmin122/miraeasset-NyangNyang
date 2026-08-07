@@ -20,3 +20,8 @@ evalset/results_*.jsonl
 # S6 다이어트 산출물 — 대용량 바이너리(sqlite 1.19GB가 GitHub 100MB 한도 초과, git-lfs 미도입).
 # server/tools/build_*.py 로 언제든 재생성 가능 (NCP 배포 시 S7에서 재생성).
 server/artifacts/
+
+# 블라인드 평가셋 — 선우 튜닝에 비노출 (Fable·사용자만 접근, 로컬 보관).
+# candidates_s4.jsonl은 blind 6문 내용을 포함하므로 함께 비공개.
+evalset/questions_blind.jsonl
+evalset/candidates_*.jsonl

@@ -4,7 +4,7 @@
 > 역사적 경위·실측 원문은 `docs/LOG.md`, 대회 개요·일정은 `docs/PLAN.md`, 계약은 `docs/SPEC.md`.
 > 새로 투입된 에이전트/세션은 **CLAUDE.md → 이 파일 → 담당 Brief(SLICES.md)** 순으로 읽으면 전체 맥락 확보 완료.
 
-*최종 갱신: 2026-08-08 (Fable, S6 검수 통과 시점 — S4 진행 중)*
+*최종 갱신: 2026-08-08 (Fable, S4 검수 통과 시점 — S5a 검수 중)*
 
 ## 우리가 누구고 뭘 하는가 (30초 요약)
 
@@ -17,11 +17,12 @@
 - FastAPI 서버 3모드: `mock`(더미) / `baseline`(PatchedSearcher 실검색 + 추출형 폴백) / `sunwoo`(선우 모듈 소켓, 계약만 존재)
 - **S1 완료**: 기동 시 백그라운드 사전 로딩 + 카나리 검색 → `GET /ready`(준비 200 / 로딩·실패 503). 콜드스타트 19s 제거 — ready 후 첫 응답 0.17s. mock 모드는 즉시 ready(58MB)
 - 실검색: 로드 17s, 검색 0.6s → 워밍업 후 질의당 0.1~0.2s. `format_context()`가 근거 표기(보고서명·접수일·접수번호) 자동 포함
-- **S2 완료**: 평가셋 **18문**(`evalset/questions_v1.jsonl`) — 전부 원문 XML 인용으로 골드 검증됨. **6유형 전부 커버**(①9 ②1 ③1 ④3 ⑤2 ⑥2) + 함정(기간밖·상장전·정정공시·사명변경·프롬프트공격·동일자 유사공시·접수연도≠기준연도)
-- 채점기(`evalset/run_eval.py`, 표준lib만): **baseline 11/18 통과** (기존 11문 8/11 유지). open은 accept 커버리지 60%, must_not은 closed·공격에서만 작동
-- 실패 7건 전부 원인 파악됨: HCX 미연결 거절 불가 2 + 폴백 비교·연산 불가 3(기대된 실패), 검색 미스 2(LIG 사명 결함 #1, 두산 T5-C-001 복합추론 — HCX 후 재관찰)
+- **S2 완료**: 평가셋 18문 골드 검증 — S4에서 36문으로 확장됨 (아래 S4 항목이 현행)
+- 채점기(`evalset/run_eval.py`, 표준lib만): open은 accept 커버리지 60% + must_not, closed는 accept+must_not, 함정은 거절마커/must_not. S4 확장으로 alt_rcept_no·근거표시 참고컬럼 추가
+- 폴백 실패 원인 전부 파악됨: HCX 미연결 거절 불가 + 폴백 비교·연산 불가(기대된 실패), 검색 미스 소수(LIG 사명 결함 #1, T5-C-001·T4-O-004 복합추론 — HCX 후 재관찰)
 - **S3 완료**: 4GB 컨테이너 실측 — **기동 3.8초 OOM(3회+검수 1회 재현 100%)**. 사인은 FAISS 이전, **임베딩 모델 fp32 가중치 로딩 스파이크(651MB→3.4GB/1초)**. colima VM(5.77GiB)은 네이티브 피크 7.33GB 재현 물리적 불가. 부수 발견: torch CPU 미핀 → CUDA 패키지 오설치로 이미지 8.65GB·빌드 57분
 - **S6 완료(잠정 — NCP x86_64 재검증은 S7)**: 다이어트 3종 = bf16 로딩(`low_cpu_mem_usage`) + FAISS SQ8(2.1GB→0.53GB) + chunk_meta SQLite 지연조회. 전부 `server/app/search.py` 몽키패치(data/ 무수정, 산출물 없으면 원본 폴백). **4GB 컨테이너 /ready 200·OOMKilled=false·18문 11/18 동일·retrieved rcept_no 18/18 문항 fp32와 완전 일치**. host RSS 7.37→2.78GiB. 산출물은 `server/artifacts/`(git 제외, `server/tools/build_*.py`로 재생성)
+- **S4 완료**: 평가셋 **36문** = dev 30문(`questions_v1.jsonl`, ①11 ②3 ③3 ④5 ⑤4 ⑥4) + **blind 6문**(`questions_blind.jsonl`, 유형당 1문, **git외·선우 튜닝 비노출** — 과적합 방지 홀드아웃). 전부 원문 XML grep 검증(신규 67개), 정정공시 계보 alt_rcept_no 반영(기존 3문 소급 — TR-NAME-001 recall 0→1.0, T5-C-002 0.5→1.0). 채점기 확장: alt 인정·open must_not(`--legacy-grading` 롤백)·근거표시 참고컬럼. **폴백 기준선 dev 17/30 + blind 3/6 = 20/36** (기존 18문 실패집합 불변 — 회귀 0건). 실패 전부 HCX 필요 카테고리로 분류 완료
 
 ## 알려진 문제 (해결 주체 표시)
 
@@ -41,6 +42,7 @@
 - [ ] **CLOVA Studio API 키 발급** (S5 차단 중. 키는 1회만 표시 → 바로 `.env`에만. 카톡·Git 절대 금지)
 - [ ] GitHub 원격 repo 생성 + push (로컬 커밋은 준비됨)
 - [ ] 팀 공유: README의 인터페이스 계약 → 선우 / 위 결함 #1~#3 → 명섭
+- [ ] **blind 평가셋 백업**: `evalset/questions_blind.jsonl`·`candidates_s4.jsonl`은 git외 로컬 유일본 — 안전한 곳(개인 클라우드 등, 선우 접근 불가)에 사본 보관
 
 ## 핵심 결정과 이유 (뒤집으려면 근거 필요)
 
@@ -52,18 +54,19 @@
 | HTTP 우선, HTTPS 보류 | 주최측 재공지 대기 (설명회) |
 | 평가 동시성 1 가정, worker 1 | 주최측 순차 호출 방침 + 4GB 메모리 보호 |
 | 채점기는 반드시 HTTP API 경유 | 평가와 동일 경로로 회귀 검증 (내부 함수 호출 금지) |
+| blind 6문은 git외·선우 비노출 (Fable·사용자만 접근) | 튜닝 과적합 방지 홀드아웃 — 로컬 유일본이므로 사용자 백업 필수 |
 | `data/` 읽기 전용 | 명섭 산출물·코퍼스 원본 — 손대면 팀 전체 파손 |
 
 ## repo 지도
 
 ```
 server/app/     main.py(라우팅) config.py(설정) search.py(검색 래퍼+libomp픽스) agents.py(3모드)
-evalset/        questions_v1.jsonl(18문) run_eval.py(채점기)
+evalset/        questions_v1.jsonl(dev 30문) questions_blind.jsonl(blind 6문, git외) run_eval.py(채점기)
 data/           corpus/(5.2GB, git외) share_embeddings/(명섭 산출물 2.9GB, git외) — 읽기 전용
 docs/           SPEC(계약) PLAN(일정·전략) SLICES(작업큐) WORKFLOW(운영규칙) LOG(일지) CONTEXT(이 파일)
 ```
 
 ## 다음 액션 (합의된 순서)
 
-~~S1~~ → ~~S2~~ → ~~S3~~ → ~~S6~~(잠정) 완료. S4~S8 상세 Brief 작성 완료(SLICES.md).
-**다음: S4(36문 확장 — 진행 중) ∥ S5a(HCX 골격, 키 불필요 — S6 완료로 착수 가능) ∥ S8 문서분(런북·프리즈 체크리스트).** S5b는 CLOVA 키, S7은 NCP 가입 대기(사용자).
+~~S1~~ → ~~S2~~ → ~~S3~~ → ~~S6~~(잠정) → ~~S4~~ 완료.
+**다음: S5a 검수(구현 완료 보고 수신) → S8 문서분(런북·프리즈 체크리스트).** S5b는 CLOVA 키, S7은 NCP 가입 대기(사용자).
