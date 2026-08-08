@@ -2,6 +2,15 @@
 
 평가 API 서버 + 평가 질의셋. 담당: 민경욱.
 
+## 팀원용 — 지금 상태와 각자 할 일
+
+**현재 상태판은 [`docs/CONTEXT.md`](docs/CONTEXT.md) 하나만 보면 된다** (뭐가 동작하고, 뭐가 문제고, 왜 그렇게 결정했는지). 요약:
+
+- 서버는 4GB 대회 스펙에서 검증 완료, 평가셋 30문 + 자동 채점기 완비. 현재 폴백 기준선 17/30 (HCX 연동 전).
+- **선우**: 아래 [에이전트 모드](#에이전트-모드-env의-agent_mode)의 계약대로 `sunwoo_agent.py`를 구현하면 꽂힌다. 완성되면 같은 30문으로 baseline과 성적 대조 → 높은 쪽으로 제출. 튜닝은 `evalset/questions_v1.jsonl`(dev 30문)로만 — **별도 blind 6문이 비공개로 있고(과적합 검증용, 민경욱 보관) 제출 모드 결정 때만 투입된다.**
+- **명섭**: `docs/CONTEXT.md`의 "알려진 문제" #1~#3이 명섭 몫 — ① LIG넥스원 옛 사명 검색 실패 ② chunk_id 중복 11,048건 ③ correction_map `superseded_by` 리스트값 599건.
+- 코퍼스·임베딩(`data/`)은 git에 없다 — 민경욱에게 받아서 아래 경로에 복사.
+
 ## 빠른 시작
 
 ```bash
@@ -56,7 +65,8 @@ class SunwooAgent:
 python3 evalset/run_eval.py            # questions_v1.jsonl 전체 채점
 ```
 
-- `evalset/questions_v1.jsonl` — 코퍼스 원문으로 골드 검증된 문항 (함정: 기간밖/상장전/정정공시/사명변경/프롬프트공격)
+- `evalset/questions_v1.jsonl` — dev 30문, 전부 코퍼스 원문으로 골드 검증 (6유형·8평가기준·함정 5종 커버: 기간밖/상장전/정정공시/사명변경/프롬프트공격)
+- blind 6문은 git·이 파일 목록에 없음 (선우 튜닝 비노출 — 과적합 방지 홀드아웃)
 - 유형별 정답률·근거 recall·지연시간 요약 출력, 상세는 `results_*.jsonl`
 
 ## 배포 (NCP, 8월 말 예정)
