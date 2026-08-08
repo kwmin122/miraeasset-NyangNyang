@@ -11,24 +11,48 @@
 - **명섭**: `docs/CONTEXT.md`의 "알려진 문제" #1~#3이 명섭 몫 — ① LIG넥스원 옛 사명 검색 실패 ② chunk_id 중복 11,048건 ③ correction_map `superseded_by` 리스트값 599건.
 - 코퍼스·임베딩(`data/`)은 git에 없다 — 민경욱에게 받아서 아래 경로에 복사.
 
-## 빠른 시작
+## 처음 세팅 (팀원 온보딩 — 위에서 아래로 그대로)
+
+**1. 받아오기** (private 레포 — GitHub 초대 수락 후)
 
 ```bash
-# 1. 의존성 (Python 3.11)
-uv venv --python 3.11 && uv pip install -r server/requirements.txt
-
-# 2. 환경 설정
-cp .env.example .env   # CLOVA_API_KEY 입력 (없으면 추출형 폴백으로 동작)
-
-# 3. 실행
-cd server && ../.venv/bin/uvicorn app.main:app --port 8000
-
-# 4. 확인
-curl "http://localhost:8000/health"
-curl "http://localhost:8000/answer?question_id=Q1&question=SK하이닉스+2024년+신규시설투자+금액은?"
+git clone https://github.com/kwmin122/miraeasset-NyangNyang.git
+cd miraeasset-NyangNyang
 ```
 
-데이터는 `data/corpus/`(원문 5.2GB), `data/share_embeddings/`(명섭 산출물 2.9GB) — git 미포함, 별도 복사 필요.
+**2. 데이터 넣기** — git에 없음(8GB), 각자 가진 것을 아래 구조 그대로 배치. 폴더 이름·구조가 다르면 서버가 못 찾는다.
+
+```
+miraeasset-NyangNyang/
+└── data/
+    ├── corpus/             ← 대회 제공 공시 원문 XML (5.2GB)
+    └── share_embeddings/   ← 명섭 산출물: 임베딩·FAISS 인덱스·search_patch.py (2.9GB)
+```
+
+명섭이 배포한 폴더 구조 그대로면 된다. `data/`는 **읽기 전용** — 수정·삭제·이동 금지.
+
+**3. 환경 세팅 + 실행** (Python 3.11)
+
+```bash
+uv venv --python 3.11 && uv pip install -r server/requirements.txt
+cp .env.example .env
+```
+
+`.env`를 열어 `AGENT_MODE=mock` → **`AGENT_MODE=baseline`으로 변경** (mock은 더미 응답이라 실검색이 안 됨). `CLOVA_API_KEY`는 비워둬도 동작한다(추출형 폴백).
+
+```bash
+cd server && ../.venv/bin/uvicorn app.main:app --port 8000
+```
+
+**4. 제대로 됐는지 확인 (이게 핵심)**
+
+```bash
+curl http://localhost:8000/ready   # {"status":"ready"} 나올 때까지 ~20초
+# 레포 루트에서, 서버 띄운 채로:
+python3 evalset/run_eval.py
+```
+
+채점 합계가 **17/30**(HCX 미연동 폴백 기준선 — 최신 수치는 `docs/CONTEXT.md`)이면 민경욱 환경과 동일하게 세팅된 것. 숫자가 다르거나 `/ready`가 계속 503이면 십중팔구 `data/` 경로·구조 문제다.
 
 ## API (대회 규격)
 
