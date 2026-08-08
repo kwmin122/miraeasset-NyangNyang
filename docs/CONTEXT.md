@@ -41,8 +41,8 @@
 
 - [ ] **NCP 가입 + 크레딧 신청** (2영업일 소요, 8월 중순까지 필요 — S7 차단 중)
 - [ ] **CLOVA Studio API 키 발급** (S5 차단 중. 키는 1회만 표시 → 바로 `.env`에만. 카톡·Git 절대 금지)
-- [ ] GitHub 원격 repo 생성 + push (로컬 커밋은 준비됨)
-- [ ] 팀 공유: README의 인터페이스 계약 → 선우 / 위 결함 #1~#3 → 명섭
+- [x] ~~GitHub 원격 repo 생성 + push~~ — **완료 (2026-08-08)**: `github.com/kwmin122/miraeasset-NyangNyang` (private, main). blind·.env·data 미포함 검증됨
+- [ ] 팀 공유: repo 초대(선우·명섭) + README 팀원 섹션 안내 / 결함 #1~#3 → 명섭 / `data/` 전달(git외 5.2GB+2.9GB)
 - [ ] **blind 평가셋 백업**: `evalset/questions_blind.jsonl`·`candidates_s4.jsonl`은 git외 로컬 유일본 — 안전한 곳(개인 클라우드 등, 선우 접근 불가)에 사본 보관
 
 ## 핵심 결정과 이유 (뒤집으려면 근거 필요)
