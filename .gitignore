@@ -25,3 +25,6 @@ server/artifacts/
 # candidates_s4.jsonl은 blind 6문 내용을 포함하므로 함께 비공개.
 evalset/questions_blind.jsonl
 evalset/candidates_*.jsonl
+
+# 선우 에이전트 로컬 캐시 — 실행할 때마다 자동 생성됨(질문->슬롯). 공유 대상 아님.
+server/app/sunwoo/slot_cache.json

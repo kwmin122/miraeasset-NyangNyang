@@ -1,0 +1,151 @@
+import re
+
+from extract import extract
+from slice1 import answer_type1
+from slice3 import answer_type3
+from slice4 import answer_type4
+from slice5 import answer_type5
+from slice6 import answer_type6
+from verify import check_dates
+from attribute import parse_ev, check_grounding, check_hedging, trace_note
+
+ATTR_MODE = "warn"
+
+
+def clean(r):
+    """모든 유형이 이 출구를 거친다. 후처리와 검증을 여기 한 곳에만 둔다."""
+    if r.get("answer"):
+        r["answer"] = re.sub(r"\*+", "", r["answer"])
+
+        bad = check_dates(r["answer"], r.get("retrieved_context", ""))
+        if bad:
+            r["think_trace"] += f" -> [검증경고] 근거에 없는 날짜: {', '.join(bad)}"
+
+        ev = parse_ev(r.get("retrieved_context", ""))
+        found = check_grounding(r["answer"], ev)
+        if found:
+            r["think_trace"] += " -> " + trace_note(found)
+
+        hedged = check_hedging(r["answer"])
+        if hedged:
+            r["think_trace"] += (" -> [추측어투] "
+                                 + " / ".join(f"'{h[:34]}'" for h in hedged[:3]))
+    return r
+
+
+def normalize_slots(slots):
+    """extract가 준 슬롯의 타입을 여기서 한 번에 정리한다.
+
+    slice마다 방어를 흩뿌리면 구멍이 계속 생긴다. 실제로 slice6만 item=None에
+    무방비여서 크래시가 났다. 라우터 입구에서 한 번 정리하면 그런 편차가 사라진다.
+
+    반환 (qtype, corps, years, item)
+    """
+    try:
+        qtype = int(str(slots.get("qtype")).strip())
+    except (TypeError, ValueError):
+        qtype = None
+    if qtype not in (1, 2, 3, 4, 5, 6):
+        qtype = None
+
+    raw = slots.get("corps") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    corps = [str(c).strip() for c in raw if c]
+
+    y = slots.get("year")
+    cand = y if isinstance(y, list) else [y]
+    years = []
+    for v in cand:
+        m = re.search(r"20\d{2}", str(v or ""))
+        if m:
+            years.append(int(m.group()))
+    years = sorted(set(years))
+
+    item = slots.get("item")
+    if isinstance(item, (list, tuple)):
+        # HCX가 항목을 리스트로 줄 때가 있다. str()로 감싸면 "['매출액', ...]"가 되어
+        # 검색어와 키워드 필터가 통째로 망가진다.
+        item = " ".join(str(x) for x in item if x)
+    elif not isinstance(item, str):
+        item = "" if item is None else str(item)
+
+    return qtype, corps, years, item
+
+
+def _answer_question(question):
+    slots = extract(question)
+    if "error" in slots:
+        return {"answer": "질의를 해석하지 못했습니다. 기업명과 연도, 찾으시는 항목을 함께 적어 다시 물어봐 주세요.",
+                "retrieved_context": "",
+                "think_trace": f"슬롯 추출 실패: {str(slots.get('raw'))[:200]}"}
+
+    qtype, corps, years, item = normalize_slots(slots)
+    trace = [f"슬롯: {slots}"]
+
+    corp = corps[0] if corps else None
+    year = years[-1] if years else None
+
+    if qtype == 3 and len(corps) < 2 and len(years) >= 2:
+        qtype = 6
+        trace.append("라우터 보정: 기업 1곳 + 연도 2개 -> 유형 6")
+    elif qtype == 3 and len(corps) < 2:
+        # slice3은 기업이 2곳이 아니면 근거 없이 "비교 대상 부족"만 돌려주고 끝난다.
+        # 그건 어떤 경우에도 정답이 아니라 단일 검색으로 되돌리는 편이 낫다.
+        qtype = 1
+        trace.append("라우터 보정: 비교 대상 1곳 -> 유형 1")
+    elif qtype == 6 and len(corps) >= 2:
+        qtype = 3
+        trace.append("라우터 보정: 기업 2곳 -> 유형 3")
+    elif qtype == 6 and len(corps) == 1 and re.search(
+            r"발행|증자|사채|계약 체결|공급계약|투자|취득|처분|해지", question or ""):
+        # 유형6은 정기보고서의 연도 대조를 전제한다. 사건성 수시공시(사채 발행·계약 등)를
+        # 두 시점 물으면 벡터 검색이 정기보고서 수천 청크에 묻힌다.
+        # 그런 질문은 manifest 직행으로 문서를 확정하는 유형4가 맞다.
+        qtype = 4
+        trace.append("라우터 보정: 단일 기업 + 수시공시 사건 -> 유형 4")
+    elif qtype in (1, 2) and re.search(r"\d+\s*건|여러 건|각 건", question or ""):
+        # "3건의 합계", "두 건을 비교" 처럼 건수를 명시한 질문은 단일 검색으로 풀 수 없다.
+        # extract가 이걸 유형1로 보내는 일이 실측으로 확인돼 코드가 되돌린다.
+        qtype = 4
+        trace.append("라우터 보정: 질문이 여러 건을 지목 -> 유형 4")
+    elif qtype is None:
+        qtype = 1
+        trace.append("유형 판별 실패 -> 유형 1로 처리")
+
+    if qtype in (1, 2):
+        r = answer_type1(question, corp=corp, year=year, item=item)
+    elif qtype == 3:
+        r = answer_type3(question, corps, year, item)
+    elif qtype == 4:
+        r = answer_type4(question, corp, years, item)
+    elif qtype == 5:
+        r = answer_type5(question, corp, year)
+    else:
+        r = answer_type6(question, corp, year, item)
+
+    r["think_trace"] = " -> ".join(trace) + " -> " + r.get("think_trace", "")
+    return clean(r)
+
+
+def answer_question(question):
+    """바깥에서 부르는 이름. 어떤 예외가 나도 dict를 돌려준다.
+
+    제출이 API 서버 형태라 미처리 예외는 500 응답, 즉 그 문항 무응답이 된다.
+    이 5줄이 나머지 모든 결함의 피해 상한을 '오답 1건'으로 묶는다.
+    """
+    try:
+        return _answer_question(question)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"answer": "처리 중 오류가 발생해 답변을 생성하지 못했습니다.",
+                "retrieved_context": "",
+                "think_trace": f"미처리 예외: {type(e).__name__}: {e}"}
+
+
+if __name__ == "__main__":
+    q = input("질문: ")
+    r = answer_question(q)
+    print("\n답변:", r["answer"])
+    print("\n추론 과정:", r["think_trace"])
