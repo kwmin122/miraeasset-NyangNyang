@@ -1,6 +1,7 @@
 from slice1 import s, search, year_of, prefer_financial
 from hcx import call_hcx
 from attribute import (BASE_RULES, GUARD_RULES, SCOPE_RULES, TABLE_RULES,
+                       CORRECTION_RULES,
                        build_context)
 
 SYSTEM3 = (
@@ -8,7 +9,7 @@ SYSTEM3 = (
     "반드시 근거 내용만 사용하라. 답변 순서: 1) 각 기업의 해당 수치를 근거에서 찾아 명시, "
     "2) 두 수치를 비교해 결론 제시. 두 수치의 차이를 말할 때는 근거의 원문 수치를 그대로 옮겨 적고 "
     "직접 계산한 값에는 '계산값'이라고 표시하라."
-    + SCOPE_RULES + BASE_RULES + GUARD_RULES
+    + SCOPE_RULES + CORRECTION_RULES + BASE_RULES + GUARD_RULES
 )
 
 def gather(corp, year, item, k=3):

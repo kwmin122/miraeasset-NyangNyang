@@ -104,6 +104,14 @@ def _answer_question(question):
         # 그런 질문은 manifest 직행으로 문서를 확정하는 유형4가 맞다.
         qtype = 4
         trace.append("라우터 보정: 단일 기업 + 수시공시 사건 -> 유형 4")
+    elif (qtype in (1, 2, 4) and corps
+          and re.search(r"이후 어떻게|이후에 어떻게|후속|결국|해지된|해지됐|취소된", question or "")
+          and re.search(r"20\d{2}[.\-년]", question or "")):
+        # "2023년 10월 6일 공시한 계약은 이후 어떻게 됐는가" 같은 후속 추적 질문.
+        # 단일 검색으로는 원공시만 찾고 그 뒤에 일어난 해지·정정을 못 본다.
+        # slice5가 해지 공시를 앵커로 잡고 원공시와 짝지어야 답이 나온다.
+        qtype = 5
+        trace.append("라우터 보정: 특정 공시의 후속 추적 -> 유형 5")
     elif qtype in (1, 2) and re.search(r"\d+\s*건|여러 건|각 건", question or ""):
         # "3건의 합계", "두 건을 비교" 처럼 건수를 명시한 질문은 단일 검색으로 풀 수 없다.
         # extract가 이걸 유형1로 보내는 일이 실측으로 확인돼 코드가 되돌린다.

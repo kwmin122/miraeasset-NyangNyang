@@ -29,6 +29,7 @@ from search_lib import Searcher
 
 from hcx import call_hcx, API_KEY, URL
 from attribute import (BASE_RULES, GUARD_RULES, SCOPE_RULES, TABLE_RULES,
+                       CORRECTION_RULES,
                        build_context)
 
 
@@ -170,7 +171,7 @@ def prefer_financial(hits, item):
 
 SYSTEM = (
     "너는 DART 공시 기반 분석 비서다. 반드시 제공된 근거 자료의 내용만으로 답하라."
-    + SCOPE_RULES + BASE_RULES + GUARD_RULES
+    + SCOPE_RULES + CORRECTION_RULES + BASE_RULES + GUARD_RULES
 )
 def _make_searcher():
     """검색기를 만든다. 팀 규약대로 PatchedSearcher를 경유한다.
@@ -194,6 +195,76 @@ def _make_searcher():
 s, _patched = _make_searcher()
 
 
+RCEPT_IDX = {}
+for _i, _m in enumerate(s.meta):
+    RCEPT_IDX.setdefault(_m["rcept_no"], []).append(_i)
+
+ORIG_OF = {}
+for _orig, _corrs in s.superseded_by.items():
+    for _c in _corrs:
+        ORIG_OF.setdefault(_c, []).append(_orig)
+
+
+def chain_years(h):
+    """이 청크가 대표하는 사건의 연도 집합.
+
+    수시공시는 정정본이 이듬해·다다음해에 접수되는 일이 흔하다. 검색에는 최신
+    정정본만 잡히는데 그 접수연도로 필터를 걸면 "그 해에 체결한 계약"이 통째로 사라진다.
+    실측: LIG 인도네시아 경찰 계약(2023-04-14, 198,437,328,900원)의 정답 금액을 담은
+    청크 7개가 전부 2024~2026년 접수라 year=2023 필터에서 전멸했다.
+
+    정기보고서는 base_year가 곧 기준연도라 체인을 볼 필요가 없다. 확장은
+    base_year가 없는 수시공시에만 적용해 영향 범위를 버그가 사는 곳으로 묶는다.
+    seen 가드는 필수다. correction_map에 상호 참조가 실재한다.
+    """
+    by = h.get("base_year")
+    if by is not None:
+        return {by}
+    years = set()
+    y0 = year_of(h)
+    if y0:
+        years.add(y0)
+    stack, seen = [h.get("rcept_no")], set()
+    while stack:
+        rn = stack.pop()
+        if not rn or rn in seen:
+            continue
+        seen.add(rn)
+        if str(rn)[:4].isdigit():
+            years.add(int(str(rn)[:4]))
+        stack.extend(ORIG_OF.get(rn, []))
+    return years
+
+
+def swap_superseded(hits, per_doc=2):
+    """검색 결과에 폐기된 원공시가 있으면 그 자리에 최신 정정본 청크를 넣는다.
+
+    PatchedSearcher가 정정 최신본을 판정하지만 그 판정은 같은 문서군 안에서만 돈다.
+    실측: 레인보우로보틱스 콜옵션 질의에서 원공시(20230315902426)만 근거로 들어오고
+    정정본(20230315902432)은 아예 검색되지 않았다. 원공시에는 정정 전 문구
+    "행사 당시 시가 및 경영권 프리미엄"이 있고 그게 채점의 금지 패턴이다.
+
+    폐기된 문서는 정의상 최신본으로 대체돼야 하므로 자리를 바꾼다.
+    정정본이 코퍼스에 없으면 원본을 그대로 둔다.
+    """
+    out, seen = [], set()
+    for h in hits:
+        nxt = s.superseded_by.get(h.get("rcept_no")) or []
+        picked = None
+        for c in sorted(nxt, reverse=True):
+            idxs = RCEPT_IDX.get(c)
+            if idxs:
+                picked = idxs[:per_doc]
+                break
+        for m in ([dict(s.meta[i]) for i in picked] if picked else [h]):
+            key = (m.get("rcept_no"), m.get("chunk_ix"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(m)
+    return out
+
+
 def search(query, k=5):
     """검색 진입점. PatchedSearcher가 있으면 그쪽으로 보낸다."""
     if _patched is not None:
@@ -210,8 +281,13 @@ def answer_type1(question, corp=None, year=None, item="", k=5):
         hits = [h for h in hits if h["corp_name"] == corp]
         trace.append(f"기업 필터({corp}) 후 {len(hits)}건")
     if year:
-        hits = [h for h in hits if year_of(h) == year]
-        trace.append(f"연도 필터({year}) 후 {len(hits)}건")
+        hits = [h for h in hits if year in chain_years(h)]
+        trace.append(f"연도 필터({year}, 정정 체인 포함) 후 {len(hits)}건")
+
+    n_before = len(hits)
+    hits = swap_superseded(hits)
+    if len(hits) != n_before:
+        trace.append(f"폐기 원공시를 최신 정정본으로 교체 ({n_before} -> {len(hits)}건)")
 
     hits, n_add = scope_backfill(hits, question, corp, year, item)
     if n_add:
