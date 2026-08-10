@@ -138,6 +138,12 @@ def get_searcher():
                 emb = str(settings.emb_dir)
                 if emb not in sys.path:
                     sys.path.insert(0, emb)
+                # search_patch.py는 경욱 작성분이라 명섭 배포본(data/share_embeddings)에
+                # 없을 수 있다 — 레포 동봉 사본(server/vendor)을 뒤에 붙여 폴백.
+                # emb가 sys.path 앞이므로 data/ 사본이 있으면 그쪽이 항상 우선.
+                vendor = str(Path(__file__).resolve().parents[1] / "vendor")
+                if vendor not in sys.path:
+                    sys.path.append(vendor)
                 _patch_cpu_embedding_dtype()
                 _patch_faiss_sq8_index()
                 _patch_lazy_chunk_meta()

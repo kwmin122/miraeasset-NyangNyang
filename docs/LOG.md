@@ -602,3 +602,22 @@ modified: server/app/hcx.py             ← 내 변경
 - `docs/RUNBOOK.md` 신규 (Fable 직접 — 문서는 역할분리 예외): 매일 10분 루틴, 재기동 명령 원문, 장애 4시나리오(/ready 503·HCX 연속 실패·품질 이상·디스크), 9/6 프리즈 체크리스트, 9/30 철수 체크리스트, **S7 배포 함정 5건**(artifacts 재생성 필수 + COPY 빈디렉토리 → 조용한 fp32 폴백 → OOM, torch CPU 핀, x86_64 재검증, .env 채널 규칙, colima 포트포워딩 이슈).
 - NCP 실측 필요 값은 전부 `⟨꺾쇠⟩` 자리표시자 — S7 완료 시 실값 치환, 리허설·p50/p95는 S8 본작업에서.
 - 이로써 **NCP·CLOVA 키 없이 진행 가능한 작업은 전부 소진** (S6→S4→S5a→S8 문서분). 남은 것은 전부 사용자 차단 항목: NCP 가입+크레딧(S7), CLOVA 키(S5b), GitHub push, 팀 공유.
+
+---
+
+### 2026-08-10 — Fable 긴급 대응: 선우 서버 부팅 실패 `No module named 'search_patch'` → 근본 수정
+
+**증상**: 선우가 레포 clone + 명섭 배포본(data/share_embeddings)으로 서버 기동 → 워밍업 카나리에서 `{"status":"error","detail":"No module named 'search_patch'"}`.
+
+**근본 원인**: `search_patch.py`(뷰어청크 제거·정정 계보 최신본 판정)는 **경욱 작성분**인데 위치가 gitignored `data/share_embeddings/`뿐이었다. 즉 레포에도 없고 명섭 배포본에도 없어서, 경욱 머신에서만 서버가 돌아가는 상태였다. README의 "명섭 산출물: …·search_patch.py" 표기도 오정보(같이 정정).
+
+**수정 (Fable 직접 — 4.7KB 파일 복사 + sys.path 폴백 5줄이라 에이전트 왕복 불요)**:
+- `data/share_embeddings/search_patch.py` → `server/vendor/search_patch.py` **바이트 동일 복사**(cmp 검증). data/ 원본은 무수정(읽기 전용 규칙).
+- `server/app/search.py get_searcher()`: emb 디렉토리 `sys.path.insert(0, …)` 뒤에 vendor 디렉토리를 `append` — **data/ 사본이 있으면 항상 우선**(경욱 환경 동작 불변), 없으면 vendor 폴백(선우 환경). 3개 몽키패치 → import 순서 불변.
+- README 온보딩 2단계 + 에이전트 모드 섹션 정정.
+
+**검증 (전부 Fable 직접)**:
+- import 해석 테스트 2시나리오: fake emb(패치 없음)+vendor → vendor 사본 로드 / 실 emb+vendor → data/ 사본 로드. 둘 다 통과.
+- 새 코드로 8003 재기동 → /ready 200 → **dev 30문 재채점 17/30, 실패집합 기준선과 문항 단위 완전 동일**(회귀 0건).
+
+**선우 전달 사항**: `git pull` 후 서버 재기동만 하면 됨. 새로 만들 것 없음.

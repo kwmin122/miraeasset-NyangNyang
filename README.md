@@ -26,10 +26,12 @@ cd miraeasset-NyangNyang
 miraeasset-NyangNyang/
 └── data/
     ├── corpus/             ← 대회 제공 공시 원문 XML (5.2GB)
-    └── share_embeddings/   ← 명섭 산출물: 임베딩·FAISS 인덱스·search_patch.py (2.9GB)
+    └── share_embeddings/   ← 명섭 산출물: 임베딩·FAISS 인덱스 (2.9GB)
 ```
 
 명섭이 배포한 폴더 구조 그대로면 된다. `data/`는 **읽기 전용** — 수정·삭제·이동 금지.
+
+`search_patch.py`(검색 보정 패치)는 명섭 산출물이 아니라 민경욱 작성분이라 명섭 배포본에 없을 수 있는데, **레포의 `server/vendor/`에 동봉돼 있어 없어도 자동으로 동작한다**. 서버가 `No module named 'search_patch'`로 죽으면 레포가 옛 버전인 것 — `git pull` 하면 해결.
 
 **3. 환경 세팅 + 실행** (Python 3.11)
 
@@ -79,8 +81,9 @@ class SunwooAgent:
         return {"answer": str, "retrieved_context": str, "think_trace": str}
 ```
 
-검색은 반드시 `data/share_embeddings/search_patch.py`의 `PatchedSearcher.search(query, k)` 경유
+검색은 반드시 `search_patch.py`의 `PatchedSearcher.search(query, k)` 경유
 (Nemotron "query: " 프리픽스 자동 처리, 뷰어청크 제거, 정정공시 최신본 판정 포함).
+파일은 레포 `server/vendor/`에 동봉 — `data/share_embeddings/`에 사본이 있으면 그쪽이 우선.
 
 ## 평가셋
 

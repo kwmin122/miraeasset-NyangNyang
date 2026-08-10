@@ -4,7 +4,7 @@
 > 역사적 경위·실측 원문은 `docs/LOG.md`, 대회 개요·일정은 `docs/PLAN.md`, 계약은 `docs/SPEC.md`.
 > 새로 투입된 에이전트/세션은 **CLAUDE.md → 이 파일 → 담당 Brief(SLICES.md)** 순으로 읽으면 전체 맥락 확보 완료.
 
-*최종 갱신: 2026-08-08 (Fable, S5a 검수 통과 시점)*
+*최종 갱신: 2026-08-10 (Fable, search_patch 배포 결함 수정 시점)*
 
 ## 우리가 누구고 뭘 하는가 (30초 요약)
 
@@ -36,6 +36,7 @@
 | 5 | 4GB RAM 초과 — 네이티브 7.33GB + Docker 4GB 기동 3.8초 OOM (S3) | **해결됨(잠정) — S6 다이어트 3종 (2026-08-08). aarch64 실측 통과, x86_64(NCP) 재검증은 S7** |
 | 7 | 이미지 11.1GB (torch CUDA 오설치 + artifacts 1.7GB) — RSS와 무관, 디스크·빌드시간 문제 | S7에서 torch CPU 핀 + NCP 빌드 시 재검토 |
 | 6 | macOS에서 faiss↔torch libomp 충돌 세그폴트 | 해결됨 (`OMP_NUM_THREADS=1`+cpu, 제거 금지) |
+| 8 | `search_patch.py`(경욱 작성)가 gitignored `data/`에만 존재 → 팀원 부팅 실패 (`No module named 'search_patch'`) | **해결됨 (2026-08-10)**: `server/vendor/` 동봉 + sys.path 폴백 (data/ 사본 있으면 그쪽 우선). 30문 회귀 0건 |
 
 ## 사용자(민경욱) 대기 항목 — 코드로 해결 불가
 
