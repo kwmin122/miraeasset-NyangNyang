@@ -1,6 +1,6 @@
 import json, re
 from pathlib import Path
-from slice1 import s, ROOT, API_KEY, URL, find_path
+from slice1 import s, ROOT, API_KEY, URL, find_path, RCEPT_IDX
 from hcx import call_hcx
 from attribute import BASE_RULES, GUARD_RULES, build_context
 
@@ -11,9 +11,7 @@ MANIFEST_PATH = find_path([
 ])
 docs = [json.loads(line) for line in open(MANIFEST_PATH, encoding="utf-8")]
 
-rcept_index = {}
-for i, m in enumerate(s.meta):
-    rcept_index.setdefault(m["rcept_no"], []).append(i)
+rcept_index = RCEPT_IDX
 
 by_rcept = {d["rcept_no"]: d for d in docs}
 

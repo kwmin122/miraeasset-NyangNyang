@@ -126,23 +126,24 @@ def scope_backfill(hits, question, corp, year, item="", n=2):
     if not (want_sep or want_con) or not corp or not year:
         return hits, 0
 
+    # 1차로 본문 없이 메타만 보고 좁힌다. 본문이 필요한 조건은 그다음에 적용한다.
+    narrowed = [m for m in SLIM
+                if m.get("corp_name") == corp and year_of(m) == year
+                and any(x in _sp(m) for x in FIN_SEC)]
     pool = []
     for kw in ((item or "").strip(), ""):
-        for m in s.meta:
-            if m.get("corp_name") != corp or year_of(m) != year:
+        for m in narrowed:
+            full = with_text(m)
+            if kw and kw not in full["text"]:
                 continue
-            if not any(x in _sp(m) for x in FIN_SEC):
+            if _fx_only(full):
                 continue
-            if kw and kw not in (m.get("text") or ""):
-                continue
-            if _fx_only(m):
-                continue
-            nc = _n_con(m)
+            nc = _n_con(full)
             if want_sep and nc >= 2:
                 continue
             if want_con and nc < 2:
                 continue
-            pool.append(m)
+            pool.append(full)
         if pool:
             break
     if not pool:
@@ -184,6 +185,16 @@ def _make_searcher():
     들고 있으면 임베딩 모델과 FAISS가 두 번 올라가 메모리가 배로 든다. 그래서 여기서는
     PatchedSearcher만 만들고 그 안의 인스턴스를 meta·superseded_by 접근에 재사용한다.
     """
+    # 서버 안에서 돌 때는 app.search가 이미 만들어 둔 검색기를 그대로 쓴다.
+    # 그쪽에는 팀의 메모리 다이어트(bf16 로딩·FAISS SQ8·chunk_meta SQLite 지연조회)가
+    # 걸려 있다. 우리가 PatchedSearcher를 새로 만들면 그 패치를 전부 우회해
+    # 모델과 인덱스가 두 번 올라간다(실측: 서버 RSS 11.3GB, 목표는 4GB).
+    try:
+        from app.search import get_searcher
+        p = get_searcher()
+        return p._s, p
+    except Exception:
+        pass
     try:
         from search_patch import PatchedSearcher
     except ImportError:
@@ -195,9 +206,78 @@ def _make_searcher():
 s, _patched = _make_searcher()
 
 
+SLIM_FIELDS = ("corp_name", "base_year", "base_month", "rcept_no", "rcept_dt",
+               "report_nm", "is_correction", "section_path", "section_id",
+               "chunk_ix", "doc_group")
+SLIM_CACHE = ROOT / "slim_index.pkl"
+
+
+def _build_slim():
+    """청크 메타에서 본문을 뺀 경량 색인을 만든다.
+
+    우리 코드는 기업·연도·섹션으로 전수 스캔을 해야 하는데, 그러려고 s.meta를
+    돌면 두 가지가 동시에 터진다.
+      ① 본문까지 통째로 상주해 서버 RSS가 11.3GB가 된다(배포 목표 4GB).
+      ② 서버의 메모리 다이어트가 켜지면 s.meta는 SQLite 지연조회 객체로 바뀌는데
+         그건 positional 접근만 지원해서 `for m in s.meta` 자체가 불가능하다.
+    본문은 전체의 대부분이고 스캔 조건에는 쓰이지 않는다. 메타만 들고 있다가
+    후보가 좁혀진 뒤 chunk_text()로 필요한 것만 꺼내면 둘 다 해결된다.
+    """
+    import json
+    import pickle
+
+    src = (EMB_DIR / "out" / "chunk_meta.jsonl") if EMB_DIR else None
+    if src is None or not src.exists():
+        return []
+    if SLIM_CACHE.exists() and SLIM_CACHE.stat().st_mtime >= src.stat().st_mtime:
+        try:
+            with open(SLIM_CACHE, "rb") as f:
+                return pickle.load(f)
+        except (OSError, ValueError, pickle.UnpicklingError):
+            pass
+    slim = []
+    with open(src, encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            d = json.loads(line)
+            r = {k: d.get(k) for k in SLIM_FIELDS}
+            r["_i"] = i
+            slim.append(r)
+    try:
+        with open(SLIM_CACHE, "wb") as f:
+            pickle.dump(slim, f, protocol=pickle.HIGHEST_PROTOCOL)
+    except OSError:
+        pass
+    return slim
+
+
+SLIM = _build_slim()
+
+
+def chunk_text(m):
+    """경량 색인 항목에서 본문을 꺼낸다. 필요한 것만 그때 읽는다."""
+    if "text" in m:
+        return m.get("text") or ""
+    i = m.get("_i")
+    if i is None:
+        return ""
+    try:
+        return s.meta[i].get("text") or ""
+    except (IndexError, KeyError, TypeError):
+        return ""
+
+
+def with_text(m):
+    """경량 항목에 본문을 채운 사본을 돌려준다. 컨텍스트 조립용."""
+    if "text" in m:
+        return m
+    out = dict(m)
+    out["text"] = chunk_text(m)
+    return out
+
+
 RCEPT_IDX = {}
-for _i, _m in enumerate(s.meta):
-    RCEPT_IDX.setdefault(_m["rcept_no"], []).append(_i)
+for _m in SLIM:
+    RCEPT_IDX.setdefault(_m["rcept_no"], []).append(_m["_i"])
 
 ORIG_OF = {}
 for _orig, _corrs in s.superseded_by.items():

@@ -1,5 +1,5 @@
 import re
-from slice1 import s, year_of
+from slice1 import s, year_of, SLIM, with_text
 from slice3 import gather
 from hcx import call_hcx
 from attribute import (build_context, CITE_RULES, BALANCED_CONTRACT, CORRECTION_RULES,
@@ -140,21 +140,20 @@ def gather_annual(corp, year, question, item, k=1):
     """
     if not annual_wanted(question, item):
         return []
+    # 메타만으로 먼저 좁히고, 본문은 살아남은 후보에만 붙인다(경량 색인 사용).
+    narrowed = [m for m in SLIM
+                if m.get("corp_name") == corp and m.get("base_year") == year
+                and (m.get("base_month") or 0) == 12
+                and not s.superseded_by.get(m.get("rcept_no"))
+                and any(x in str(m.get("section_path") or "") for x in ANNUAL_SECTIONS)]
     cand = []
-    for m in s.meta:
-        if m.get("corp_name") != corp or m.get("base_year") != year:
-            continue
-        if (m.get("base_month") or 0) != 12:
-            continue
-        if s.superseded_by.get(m.get("rcept_no")):
-            continue
-        if not any(x in str(m.get("section_path") or "") for x in ANNUAL_SECTIONS):
-            continue
-        head = annual_fact_head(m)
+    for m in narrowed:
+        full = with_text(m)
+        head = annual_fact_head(full)
         if not head:
             continue
-        m2 = dict(m)
-        m2["text"] = head + (m.get("text") or "")
+        m2 = dict(full)
+        m2["text"] = head + full["text"]
         cand.append(m2)
     cand.sort(key=lambda m: (0 if "주요 제품" in str(m.get("section_path")) else 1,
                              m.get("chunk_ix", 0)))
@@ -189,16 +188,15 @@ CAUSE_HINT = ("때문", "따라", "인해", "영향", "요인", "원인", "증�
 
 def gather_bg(corp, year, item, k=3):
     item = item or ""
+    narrowed = [m for m in SLIM
+                if m.get("corp_name") == corp and year_of(m) == year
+                and any(x in str(m.get("section_path") or "") for x in BG_SECTIONS)]
     out = []
-    for m in s.meta:
-        if m.get("corp_name") != corp or year_of(m) != year:
+    for m in narrowed:
+        full = with_text(m)
+        if any(n in full["text"] for n in BG_NOISE):
             continue
-        sp = str(m.get("section_path") or "")
-        if not any(x in sp for x in BG_SECTIONS):
-            continue
-        if any(n in m["text"] for n in BG_NOISE):
-            continue
-        out.append(m)
+        out.append(full)
     out.sort(key=lambda m: (_section_rank(m),
                             "사업보고서" not in str(m.get("report_nm")),
                             item not in m["text"],
