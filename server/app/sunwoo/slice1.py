@@ -50,7 +50,10 @@ FX_UNIT = re.compile(r"\(\s*단위\s*[:：]([^)]{0,40})\)")
 FX_CUR = re.compile(r"GBP|SGD|IDR|VND|USD|EUR|JPY|CNY|THB|INR|BRL|MYR|HKD|AUD|RUB")
 KRW_TOK = re.compile(r"백만원|십억원|억원|천원|만원|\(\s*단위\s*[:：]\s*원")
 OVERSEAS_Q = ("해외", "법인", "현지", "종속", "자회사", "지점")
-FIN_SEC = ("요약재무정보", "재무제표")
+# 배당 섹션을 넣은 이유: 거기 "(별도)당기순이익 2,047,781" 처럼 스코프가 괄호로
+# 명시된 요약표가 있다. 요약재무정보 표는 당기·전기·전전기가 나란히 있어 열을 헷갈리는데
+# 이 표는 값이 하나뿐이라 헷갈릴 여지가 없다.
+FIN_SEC = ("요약재무정보", "재무제표", "배당에관한사항")
 
 
 def _sp(h):
@@ -130,6 +133,7 @@ def scope_backfill(hits, question, corp, year, item="", n=2):
     narrowed = [m for m in SLIM
                 if m.get("corp_name") == corp and year_of(m) == year
                 and any(x in _sp(m) for x in FIN_SEC)]
+    mark = "(별도)" if want_sep else "(연결)"
     pool = []
     for kw in ((item or "").strip(), ""):
         for m in narrowed:
@@ -138,18 +142,26 @@ def scope_backfill(hits, question, corp, year, item="", n=2):
                 continue
             if _fx_only(full):
                 continue
-            nc = _n_con(full)
-            if want_sep and nc >= 2:
-                continue
-            if want_con and nc < 2:
-                continue
+            # "(별도)당기순이익 ... (연결)당기순이익 ..." 처럼 두 스코프를 한 표에
+            # 나란히 적은 요약표가 있다. 그건 '연결 자료'가 아니라 오히려 가장 좋은
+            # 근거라서, 명시 표기가 있으면 밀도 규칙을 건너뛴다.
+            if mark not in full["text"]:
+                nc = _n_con(full)
+                if want_sep and nc >= 2:
+                    continue
+                if want_con and nc < 2:
+                    continue
             pool.append(full)
         if pool:
             break
     if not pool:
         return hits, 0
 
-    pool.sort(key=lambda m: (0 if "사업보고서" in str(m.get("report_nm")) else 1,
+    # "(별도)당기순이익 2,047,781"처럼 스코프가 괄호로 명시된 표를 최우선으로 둔다.
+    # 요약재무정보 표는 당기·전기·전전기가 나란히 있어 HCX가 열을 헷갈리는데,
+    # 명시 표기가 있는 표는 값이 하나뿐이라 헷갈릴 여지가 없다.
+    pool.sort(key=lambda m: (0 if mark in (m.get("text") or "") else 1,
+                             0 if "사업보고서" in str(m.get("report_nm")) else 1,
                              0 if m.get("is_correction") else 1,
                              0 if "요약재무정보" in _sp(m) else (2 if "첨부" in _sp(m) else 1),
                              m.get("chunk_ix") or 0))

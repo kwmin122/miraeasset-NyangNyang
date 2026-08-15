@@ -12,10 +12,32 @@ from attribute import parse_ev, check_grounding, check_hedging, trace_note
 ATTR_MODE = "warn"
 
 
+def unify_units(text, ctx):
+    """금액 단위 표기의 띄어쓰기를 근거 원문 쪽으로 되돌린다.
+
+    한화오션 문항에서 근거 원문은 '12조 7,835억원'인데 HCX가 '12조 7,835억 원'으로
+    띄어 썼다. 숫자도 단위도 맞는데 공백 하나 때문에 채점 문자열이 어긋나
+    한 문항이 통째로 틀린 것으로 처리됐다.
+
+    임의로 붙이거나 띄우는 게 아니다. 근거 본문에서 두 표기의 등장 횟수를 세서
+    많이 쓰인 쪽으로 맞춘다. '원문 표기를 그대로 옮긴다'는 원칙을 코드가 집행하는
+    것이고, 근거에 없는 표기를 새로 만들어내지 않는다.
+    """
+    for u in ("조", "억", "만", "천"):
+        joined, spaced = u + "원", u + " 원"
+        nj, ns = ctx.count(joined), ctx.count(spaced)
+        if nj > ns:
+            text = text.replace(spaced, joined)
+        elif ns > nj:
+            text = text.replace(joined, spaced)
+    return text
+
+
 def clean(r):
     """모든 유형이 이 출구를 거친다. 후처리와 검증을 여기 한 곳에만 둔다."""
     if r.get("answer"):
         r["answer"] = re.sub(r"\*+", "", r["answer"])
+        r["answer"] = unify_units(r["answer"], r.get("retrieved_context", ""))
 
         bad = check_dates(r["answer"], r.get("retrieved_context", ""))
         if bad:
@@ -112,6 +134,16 @@ def _answer_question(question):
         # slice5가 해지 공시를 앵커로 잡고 원공시와 짝지어야 답이 나온다.
         qtype = 5
         trace.append("라우터 보정: 특정 공시의 후속 추적 -> 유형 5")
+    elif qtype == 5 and not re.search(
+            r"해지|해제|취소|종료|이후 어떻게|이후에 어떻게|후속|결국", question or ""):
+        # 위 규칙의 반대 방향이다. 승격 규칙만 있고 강등 규칙이 없어서,
+        # extract가 유형5로 잘못 보내면 slice5가 해지 공시를 앵커로 찾다가
+        # "해지 공시가 없습니다"라고 단언해 버린다. 질문은 해지를 묻지도 않았는데.
+        # 실측: 문장 끝을 "얼마인가?" -> "얼마인지 알려주실 수 있나요?"로 바꾸자
+        # extract가 유형5로 분류해 TR-NAME-001이 통째로 틀렸다.
+        # 판정 어휘는 위 승격 규칙과 같은 것을 쓴다. 새 어휘를 만들지 않는다.
+        qtype = 1
+        trace.append("라우터 보정: 후속·해지 어휘가 없음 -> 유형 1")
     elif qtype in (1, 2) and re.search(r"\d+\s*건|여러 건|각 건", question or ""):
         # "3건의 합계", "두 건을 비교" 처럼 건수를 명시한 질문은 단일 검색으로 풀 수 없다.
         # extract가 이걸 유형1로 보내는 일이 실측으로 확인돼 코드가 되돌린다.
