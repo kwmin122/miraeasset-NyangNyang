@@ -85,7 +85,7 @@ def extract(question, _retry=True, use_cache=True):
 
     slots = parse_json(strip_fence(text))
     if slots is None and _retry:
-        return extract(question, _retry=False, use_cache=False)
+        return extract(question, _retry=False, use_cache=use_cache)
     if slots is None:
         return {"error": "JSON 파싱 실패", "raw": text}
 

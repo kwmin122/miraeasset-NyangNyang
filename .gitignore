@@ -8,7 +8,8 @@ __pycache__/
 venv/
 
 # 환경변수·시크릿 (CLOVA API 키 등)
-.env
+.env*
+!.env.example
 *.pem
 
 # OS
@@ -28,3 +29,4 @@ evalset/candidates_*.jsonl
 
 # 선우 에이전트 로컬 캐시 — 실행할 때마다 자동 생성됨(질문->슬롯). 공유 대상 아님.
 server/app/sunwoo/slot_cache.json
+server/app/sunwoo/slim_index.pkl

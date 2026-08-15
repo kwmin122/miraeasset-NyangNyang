@@ -1,9 +1,9 @@
 import re
-from slice1 import s, year_of
+from slice1 import s, year_of, SLIM, with_text
 from slice3 import gather
 from hcx import call_hcx
-from attribute import (build_context, CITE_RULES, BALANCED_CONTRACT,
-                       BASE_RULES, GUARD_RULES, TABLE_RULES)
+from attribute import (build_context, CITE_RULES, BALANCED_CONTRACT, CORRECTION_RULES,
+                       BASE_RULES, GUARD_RULES)
 
 ANNUAL_SECTIONS = ("주요 제품 및 서비스", "매출 및 수주")
 ANNUAL_HINT = ("매출 구성", "매출구성", "비중", "구성비", "품목별", "제품별")
@@ -140,21 +140,20 @@ def gather_annual(corp, year, question, item, k=1):
     """
     if not annual_wanted(question, item):
         return []
+    # 메타만으로 먼저 좁히고, 본문은 살아남은 후보에만 붙인다(경량 색인 사용).
+    narrowed = [m for m in SLIM
+                if m.get("corp_name") == corp and m.get("base_year") == year
+                and (m.get("base_month") or 0) == 12
+                and not s.superseded_by.get(m.get("rcept_no"))
+                and any(x in str(m.get("section_path") or "") for x in ANNUAL_SECTIONS)]
     cand = []
-    for m in s.meta:
-        if m.get("corp_name") != corp or m.get("base_year") != year:
-            continue
-        if (m.get("base_month") or 0) != 12:
-            continue
-        if s.superseded_by.get(m.get("rcept_no")):
-            continue
-        if not any(x in str(m.get("section_path") or "") for x in ANNUAL_SECTIONS):
-            continue
-        head = annual_fact_head(m)
+    for m in narrowed:
+        full = with_text(m)
+        head = annual_fact_head(full)
         if not head:
             continue
-        m2 = dict(m)
-        m2["text"] = head + (m.get("text") or "")
+        m2 = dict(full)
+        m2["text"] = head + full["text"]
         cand.append(m2)
     cand.sort(key=lambda m: (0 if "주요 제품" in str(m.get("section_path")) else 1,
                              m.get("chunk_ix", 0)))
@@ -189,16 +188,15 @@ CAUSE_HINT = ("때문", "따라", "인해", "영향", "요인", "원인", "증�
 
 def gather_bg(corp, year, item, k=3):
     item = item or ""
+    narrowed = [m for m in SLIM
+                if m.get("corp_name") == corp and year_of(m) == year
+                and any(x in str(m.get("section_path") or "") for x in BG_SECTIONS)]
     out = []
-    for m in s.meta:
-        if m.get("corp_name") != corp or year_of(m) != year:
+    for m in narrowed:
+        full = with_text(m)
+        if any(n in full["text"] for n in BG_NOISE):
             continue
-        sp = str(m.get("section_path") or "")
-        if not any(x in sp for x in BG_SECTIONS):
-            continue
-        if any(n in m["text"] for n in BG_NOISE):
-            continue
-        out.append(m)
+        out.append(full)
     out.sort(key=lambda m: (_section_rank(m),
                             "사업보고서" not in str(m.get("report_nm")),
                             item not in m["text"],
@@ -224,7 +222,7 @@ SYSTEM6 = (
     "수치 근거와 배경 근거로 나뉘어 번호와 함께 제공된다. "
     "반드시 근거 내용만 사용하라. 답변 순서: 1) 연도별 해당 수치를 수치 근거에서 찾아 각각 명시, "
     "2) 두 연도의 변화를 증가/감소와 폭으로 제시, 3) 배경 근거에 적힌 내용으로 변화의 원인을 설명."
-    + BASE_RULES + GUARD_RULES + CITE_RULES + BALANCED_CONTRACT
+    + BASE_RULES + GUARD_RULES + CORRECTION_RULES + CITE_RULES + BALANCED_CONTRACT
 )
 
 SYSTEM6_NOBG = (
@@ -262,10 +260,12 @@ def answer_type6(question, corp, year, item):
 
     groups = []
     found, bg_all = [], []
+    used_annual = False
     for y in (y1, y2):
         annual = gather_annual(corp, y, question, item)
         hits = gather(corp, y, item)
         if annual:
+            used_annual = True
             keys = {(m.get("rcept_no"), m.get("section_id")) for m in annual}
             hits = [h for h in hits
                     if (h.get("rcept_no"), h.get("section_id")) not in keys
@@ -298,9 +298,15 @@ def answer_type6(question, corp, year, item):
     trace.append("배경 근거 충분" if enough else "배경 근거 불충분 -> 배경 서술 요구 안 함")
     system = SYSTEM6 if enough else SYSTEM6_NOBG
 
+    ask = (f"근거 자료 (총 {total}건):\n{context}질문: {question}\n"
+           f"{y1}년과 {y2}년 각각의 수치를 반드시 모두 제시한 뒤 비교하라.")
+    if used_annual:
+        # 비중만 답하고 금액을 빠뜨리는 일이 실측으로 반복됐다. 채점은 원문 수치
+        # 문자열 일치라 금액이 빠지면 비중을 맞혀도 미달이 난다.
+        ask += (f" 비중(%)만 쓰지 말고 각 항목의 금액과 연도별 총액(합계·계 행)을"
+                f" 원문 숫자 그대로 함께 적어라. {y1}년 총액과 {y2}년 총액을 둘 다 밝혀라.")
     messages = [{"role": "system", "content": system},
-                {"role": "user", "content": f"근거 자료 (총 {total}건):\n{context}질문: {question}\n"
-                                            f"{y1}년과 {y2}년 각각의 수치를 반드시 모두 제시한 뒤 비교하라."}]
+                {"role": "user", "content": ask}]
     text, note = call_hcx(messages, max_tokens=1400)
     if text is None:
         return {"answer": None, "retrieved_context": context,

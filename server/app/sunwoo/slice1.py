@@ -23,12 +23,16 @@ def find_path(rels, start=None):
 
 
 EMB_DIR = find_path(["share_embeddings", "data/share_embeddings"])
-if EMB_DIR:
-    sys.path.append(str(EMB_DIR))
+if EMB_DIR is None:
+    raise SystemExit(
+        "임베딩 폴더를 찾지 못했다. data/share_embeddings/ 를 배치한 뒤 다시 실행해라. "
+        "(data/ 는 용량 때문에 git에서 제외돼 있어 clone 직후에는 없다. README 참조)")
+sys.path.append(str(EMB_DIR))
 from search_lib import Searcher
 
 from hcx import call_hcx, API_KEY, URL
-from attribute import (BASE_RULES, GUARD_RULES, SCOPE_RULES, TABLE_RULES,
+from attribute import (BASE_RULES, GUARD_RULES, SCOPE_RULES,
+                       CORRECTION_RULES,
                        build_context)
 
 
@@ -49,7 +53,10 @@ FX_UNIT = re.compile(r"\(\s*단위\s*[:：]([^)]{0,40})\)")
 FX_CUR = re.compile(r"GBP|SGD|IDR|VND|USD|EUR|JPY|CNY|THB|INR|BRL|MYR|HKD|AUD|RUB")
 KRW_TOK = re.compile(r"백만원|십억원|억원|천원|만원|\(\s*단위\s*[:：]\s*원")
 OVERSEAS_Q = ("해외", "법인", "현지", "종속", "자회사", "지점")
-FIN_SEC = ("요약재무정보", "재무제표")
+# 배당 섹션을 넣은 이유: 거기 "(별도)당기순이익 2,047,781" 처럼 스코프가 괄호로
+# 명시된 요약표가 있다. 요약재무정보 표는 당기·전기·전전기가 나란히 있어 열을 헷갈리는데
+# 이 표는 값이 하나뿐이라 헷갈릴 여지가 없다.
+FIN_SEC = ("요약재무정보", "재무제표", "배당에관한사항")
 
 
 def _sp(h):
@@ -125,29 +132,39 @@ def scope_backfill(hits, question, corp, year, item="", n=2):
     if not (want_sep or want_con) or not corp or not year:
         return hits, 0
 
+    # 1차로 본문 없이 메타만 보고 좁힌다. 본문이 필요한 조건은 그다음에 적용한다.
+    narrowed = [m for m in SLIM
+                if m.get("corp_name") == corp and year_of(m) == year
+                and any(x in _sp(m) for x in FIN_SEC)]
+    mark = "(별도)" if want_sep else "(연결)"
     pool = []
     for kw in ((item or "").strip(), ""):
-        for m in s.meta:
-            if m.get("corp_name") != corp or year_of(m) != year:
+        for m in narrowed:
+            full = with_text(m)
+            if kw and kw not in full["text"]:
                 continue
-            if not any(x in _sp(m) for x in FIN_SEC):
+            if _fx_only(full):
                 continue
-            if kw and kw not in (m.get("text") or ""):
-                continue
-            if _fx_only(m):
-                continue
-            nc = _n_con(m)
-            if want_sep and nc >= 2:
-                continue
-            if want_con and nc < 2:
-                continue
-            pool.append(m)
+            # "(별도)당기순이익 ... (연결)당기순이익 ..." 처럼 두 스코프를 한 표에
+            # 나란히 적은 요약표가 있다. 그건 '연결 자료'가 아니라 오히려 가장 좋은
+            # 근거라서, 명시 표기가 있으면 밀도 규칙을 건너뛴다.
+            if mark not in full["text"]:
+                nc = _n_con(full)
+                if want_sep and nc >= 2:
+                    continue
+                if want_con and nc < 2:
+                    continue
+            pool.append(full)
         if pool:
             break
     if not pool:
         return hits, 0
 
-    pool.sort(key=lambda m: (0 if "사업보고서" in str(m.get("report_nm")) else 1,
+    # "(별도)당기순이익 2,047,781"처럼 스코프가 괄호로 명시된 표를 최우선으로 둔다.
+    # 요약재무정보 표는 당기·전기·전전기가 나란히 있어 HCX가 열을 헷갈리는데,
+    # 명시 표기가 있는 표는 값이 하나뿐이라 헷갈릴 여지가 없다.
+    pool.sort(key=lambda m: (0 if mark in (m.get("text") or "") else 1,
+                             0 if "사업보고서" in str(m.get("report_nm")) else 1,
                              0 if m.get("is_correction") else 1,
                              0 if "요약재무정보" in _sp(m) else (2 if "첨부" in _sp(m) else 1),
                              m.get("chunk_ix") or 0))
@@ -170,7 +187,7 @@ def prefer_financial(hits, item):
 
 SYSTEM = (
     "너는 DART 공시 기반 분석 비서다. 반드시 제공된 근거 자료의 내용만으로 답하라."
-    + SCOPE_RULES + BASE_RULES + GUARD_RULES
+    + SCOPE_RULES + CORRECTION_RULES + BASE_RULES + GUARD_RULES
 )
 def _make_searcher():
     """검색기를 만든다. 팀 규약대로 PatchedSearcher를 경유한다.
@@ -183,6 +200,20 @@ def _make_searcher():
     들고 있으면 임베딩 모델과 FAISS가 두 번 올라가 메모리가 배로 든다. 그래서 여기서는
     PatchedSearcher만 만들고 그 안의 인스턴스를 meta·superseded_by 접근에 재사용한다.
     """
+    # 서버 안에서 돌 때는 app.search가 이미 만들어 둔 검색기를 그대로 쓴다.
+    # 그쪽에는 팀의 메모리 다이어트(bf16 로딩·FAISS SQ8·chunk_meta SQLite 지연조회)가
+    # 걸려 있다. 우리가 PatchedSearcher를 새로 만들면 그 패치를 전부 우회해
+    # 모델과 인덱스가 두 번 올라간다(실측: 서버 RSS 11.3GB, 목표는 4GB).
+    try:
+        from app.search import get_searcher
+        p = get_searcher()
+        return p._s, p
+    except Exception as e:
+        # 조용히 넘어가면 안 된다. 이 폴백이 걸린 순간 팀 다이어트가 통째로
+        # 우회돼 메모리가 3배가 되는데, 답변은 그대로 나와서 아무도 모른다.
+        # 4GB 컨테이너에서는 그 상태로 OOM이 난다.
+        print("[선우] app.search 사용 불가 -> 자체 검색기로 폴백. "
+              "메모리 다이어트가 적용되지 않는다: %s" % e, file=sys.stderr)
     try:
         from search_patch import PatchedSearcher
     except ImportError:
@@ -192,6 +223,145 @@ def _make_searcher():
 
 
 s, _patched = _make_searcher()
+
+
+SLIM_FIELDS = ("corp_name", "base_year", "base_month", "rcept_no", "rcept_dt",
+               "report_nm", "is_correction", "section_path", "section_id",
+               "chunk_ix", "doc_group")
+SLIM_CACHE = ROOT / "slim_index.pkl"
+
+
+def _build_slim():
+    """청크 메타에서 본문을 뺀 경량 색인을 만든다.
+
+    우리 코드는 기업·연도·섹션으로 전수 스캔을 해야 하는데, 그러려고 s.meta를
+    돌면 두 가지가 동시에 터진다.
+      ① 본문까지 통째로 상주해 서버 RSS가 11.3GB가 된다(배포 목표 4GB).
+      ② 서버의 메모리 다이어트가 켜지면 s.meta는 SQLite 지연조회 객체로 바뀌는데
+         그건 positional 접근만 지원해서 `for m in s.meta` 자체가 불가능하다.
+    본문은 전체의 대부분이고 스캔 조건에는 쓰이지 않는다. 메타만 들고 있다가
+    후보가 좁혀진 뒤 chunk_text()로 필요한 것만 꺼내면 둘 다 해결된다.
+    """
+    import json
+    import pickle
+
+    src = (EMB_DIR / "out" / "chunk_meta.jsonl") if EMB_DIR else None
+    if src is None or not src.exists():
+        return []
+    if SLIM_CACHE.exists() and SLIM_CACHE.stat().st_mtime >= src.stat().st_mtime:
+        try:
+            with open(SLIM_CACHE, "rb") as f:
+                return pickle.load(f)
+        except (OSError, ValueError, pickle.UnpicklingError):
+            pass
+    slim = []
+    with open(src, encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            d = json.loads(line)
+            r = {k: d.get(k) for k in SLIM_FIELDS}
+            r["_i"] = i
+            slim.append(r)
+    try:
+        with open(SLIM_CACHE, "wb") as f:
+            pickle.dump(slim, f, protocol=pickle.HIGHEST_PROTOCOL)
+    except OSError:
+        pass
+    return slim
+
+
+SLIM = _build_slim()
+
+
+def chunk_text(m):
+    """경량 색인 항목에서 본문을 꺼낸다. 필요한 것만 그때 읽는다."""
+    if "text" in m:
+        return m.get("text") or ""
+    i = m.get("_i")
+    if i is None:
+        return ""
+    try:
+        return s.meta[i].get("text") or ""
+    except (IndexError, KeyError, TypeError):
+        return ""
+
+
+def with_text(m):
+    """경량 항목에 본문을 채운 사본을 돌려준다. 컨텍스트 조립용."""
+    if "text" in m:
+        return m
+    out = dict(m)
+    out["text"] = chunk_text(m)
+    return out
+
+
+RCEPT_IDX = {}
+for _m in SLIM:
+    RCEPT_IDX.setdefault(_m["rcept_no"], []).append(_m["_i"])
+
+ORIG_OF = {}
+for _orig, _corrs in s.superseded_by.items():
+    for _c in _corrs:
+        ORIG_OF.setdefault(_c, []).append(_orig)
+
+
+def chain_years(h):
+    """이 청크가 대표하는 사건의 연도 집합.
+
+    수시공시는 정정본이 이듬해·다다음해에 접수되는 일이 흔하다. 검색에는 최신
+    정정본만 잡히는데 그 접수연도로 필터를 걸면 "그 해에 체결한 계약"이 통째로 사라진다.
+    실측: LIG 인도네시아 경찰 계약(2023-04-14, 198,437,328,900원)의 정답 금액을 담은
+    청크 7개가 전부 2024~2026년 접수라 year=2023 필터에서 전멸했다.
+
+    정기보고서는 base_year가 곧 기준연도라 체인을 볼 필요가 없다. 확장은
+    base_year가 없는 수시공시에만 적용해 영향 범위를 버그가 사는 곳으로 묶는다.
+    seen 가드는 필수다. correction_map에 상호 참조가 실재한다.
+    """
+    by = h.get("base_year")
+    if by is not None:
+        return {by}
+    years = set()
+    y0 = year_of(h)
+    if y0:
+        years.add(y0)
+    stack, seen = [h.get("rcept_no")], set()
+    while stack:
+        rn = stack.pop()
+        if not rn or rn in seen:
+            continue
+        seen.add(rn)
+        if str(rn)[:4].isdigit():
+            years.add(int(str(rn)[:4]))
+        stack.extend(ORIG_OF.get(rn, []))
+    return years
+
+
+def swap_superseded(hits, per_doc=2):
+    """검색 결과에 폐기된 원공시가 있으면 그 자리에 최신 정정본 청크를 넣는다.
+
+    PatchedSearcher가 정정 최신본을 판정하지만 그 판정은 같은 문서군 안에서만 돈다.
+    실측: 레인보우로보틱스 콜옵션 질의에서 원공시(20230315902426)만 근거로 들어오고
+    정정본(20230315902432)은 아예 검색되지 않았다. 원공시에는 정정 전 문구
+    "행사 당시 시가 및 경영권 프리미엄"이 있고 그게 채점의 금지 패턴이다.
+
+    폐기된 문서는 정의상 최신본으로 대체돼야 하므로 자리를 바꾼다.
+    정정본이 코퍼스에 없으면 원본을 그대로 둔다.
+    """
+    out, seen = [], set()
+    for h in hits:
+        nxt = s.superseded_by.get(h.get("rcept_no")) or []
+        picked = None
+        for c in sorted(nxt, reverse=True):
+            idxs = RCEPT_IDX.get(c)
+            if idxs:
+                picked = idxs[:per_doc]
+                break
+        for m in ([dict(s.meta[i]) for i in picked] if picked else [h]):
+            key = (m.get("rcept_no"), m.get("chunk_ix"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(m)
+    return out
 
 
 def search(query, k=5):
@@ -210,8 +380,13 @@ def answer_type1(question, corp=None, year=None, item="", k=5):
         hits = [h for h in hits if h["corp_name"] == corp]
         trace.append(f"기업 필터({corp}) 후 {len(hits)}건")
     if year:
-        hits = [h for h in hits if year_of(h) == year]
-        trace.append(f"연도 필터({year}) 후 {len(hits)}건")
+        hits = [h for h in hits if year in chain_years(h)]
+        trace.append(f"연도 필터({year}, 정정 체인 포함) 후 {len(hits)}건")
+
+    n_before = len(hits)
+    hits = swap_superseded(hits)
+    if len(hits) != n_before:
+        trace.append(f"폐기 원공시를 최신 정정본으로 교체 ({n_before} -> {len(hits)}건)")
 
     hits, n_add = scope_backfill(hits, question, corp, year, item)
     if n_add:

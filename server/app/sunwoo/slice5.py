@@ -87,7 +87,15 @@ def pick_starts(ends_doc, cands, k=2):
     scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
     return [d for _, _, d in scored[:k]]
 
-def answer_type5(question, corp, year=None):
+def answer_type5(question, corp):
+    """연도를 인자로 받지 않는다.
+
+    유형5는 체결과 해지를 잇는 질문인데, 두 사건은 대개 다른 해에 있다
+    (예: 2023-10 체결 -> 2025-12 해지). 질문에 적힌 연도로 해지 공시를 거르면
+    답이 되는 해지가 통째로 잘려나간다. 연도는 아래 question_date_keys가
+    해지 본문에 적힌 '관련공시 2023-10-06' 같은 원공시 날짜와 맞추는 데 쓴다.
+    거르는 게 아니라 순서를 정하는 데만 쓰는 것이 이 슬라이스에서는 맞다.
+    """
     trace = []
     cands = [d for d in docs if d["corp_name"] == corp]
     trace.append(f"기업 필터 후 {len(cands)}건")

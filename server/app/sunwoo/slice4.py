@@ -1,6 +1,6 @@
 import json, re
 from pathlib import Path
-from slice1 import s, ROOT, API_KEY, URL, find_path
+from slice1 import s, ROOT, API_KEY, URL, find_path, RCEPT_IDX
 from hcx import call_hcx
 from attribute import BASE_RULES, GUARD_RULES, build_context
 
@@ -9,11 +9,13 @@ MANIFEST_PATH = find_path([
     "data/corpus/manifest.jsonl",
     "corpus/manifest.jsonl",
 ])
+if MANIFEST_PATH is None:
+    raise SystemExit(
+        "corpus/manifest.jsonl 을 찾지 못했다. data/corpus/ 를 배치한 뒤 다시 실행해라. "
+        "(data/ 는 용량 때문에 git에서 제외돼 있어 clone 직후에는 없다. README 참조)")
 docs = [json.loads(line) for line in open(MANIFEST_PATH, encoding="utf-8")]
 
-rcept_index = {}
-for i, m in enumerate(s.meta):
-    rcept_index.setdefault(m["rcept_no"], []).append(i)
+rcept_index = RCEPT_IDX
 
 by_rcept = {d["rcept_no"]: d for d in docs}
 
