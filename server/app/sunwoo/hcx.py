@@ -29,12 +29,31 @@ def _up(rels):
     한 칸만 달라져도 키를 못 찾는다.
     """
     here = ROOT.resolve()
-    for base in [here, *here.parents]:
+    for base in _bounded(here):
         for rel in rels:
             p = base / rel
             if p.exists():
                 return p
     return None
+
+
+def _bounded(here, max_up=3):
+    """올라갈 범위를 프로젝트 안으로 묶는다.
+
+    상한 없이 조상을 다 훑으면 드라이브 루트까지 올라간다. 그러면 이 레포와
+    무관한 C:/Users/<계정>/.env 를 집어 그 안의 키로 외부 API를 호출하게 된다.
+    공용 계정이나 CI에서는 남의 자격증명을 쓰는 셈이고, 어느 파일을 골랐는지
+    로그도 안 남아서 알아챌 방법이 없다.
+
+    .git이 있는 폴더(레포 루트)에서 멈추고, 못 찾으면 세 칸까지만 올라간다.
+    서버 배치(server/app/sunwoo)에서 레포 루트까지가 정확히 세 칸이다.
+    """
+    out = [here]
+    for p in here.parents[:max_up]:
+        out.append(p)
+        if (p / ".git").exists():
+            break
+    return out
 
 
 def _from_env_file(p):

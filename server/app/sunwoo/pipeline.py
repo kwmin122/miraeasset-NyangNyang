@@ -9,8 +9,6 @@ from slice6 import answer_type6
 from verify import check_dates
 from attribute import parse_ev, check_grounding, check_hedging, trace_note
 
-ATTR_MODE = "warn"
-
 
 def unify_units(text, ctx):
     """금액 단위 표기의 띄어쓰기를 근거 원문 쪽으로 되돌린다.
@@ -160,7 +158,7 @@ def _answer_question(question):
     elif qtype == 4:
         r = answer_type4(question, corp, years, item)
     elif qtype == 5:
-        r = answer_type5(question, corp, year)
+        r = answer_type5(question, corp)
     else:
         r = answer_type6(question, corp, year, item)
 

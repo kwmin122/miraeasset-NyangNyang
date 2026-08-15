@@ -1,6 +1,6 @@
 from slice1 import s, search, year_of, prefer_financial
 from hcx import call_hcx
-from attribute import (BASE_RULES, GUARD_RULES, SCOPE_RULES, TABLE_RULES,
+from attribute import (BASE_RULES, GUARD_RULES, SCOPE_RULES,
                        CORRECTION_RULES,
                        build_context)
 

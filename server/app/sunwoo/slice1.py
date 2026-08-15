@@ -23,12 +23,15 @@ def find_path(rels, start=None):
 
 
 EMB_DIR = find_path(["share_embeddings", "data/share_embeddings"])
-if EMB_DIR:
-    sys.path.append(str(EMB_DIR))
+if EMB_DIR is None:
+    raise SystemExit(
+        "임베딩 폴더를 찾지 못했다. data/share_embeddings/ 를 배치한 뒤 다시 실행해라. "
+        "(data/ 는 용량 때문에 git에서 제외돼 있어 clone 직후에는 없다. README 참조)")
+sys.path.append(str(EMB_DIR))
 from search_lib import Searcher
 
 from hcx import call_hcx, API_KEY, URL
-from attribute import (BASE_RULES, GUARD_RULES, SCOPE_RULES, TABLE_RULES,
+from attribute import (BASE_RULES, GUARD_RULES, SCOPE_RULES,
                        CORRECTION_RULES,
                        build_context)
 
@@ -205,8 +208,12 @@ def _make_searcher():
         from app.search import get_searcher
         p = get_searcher()
         return p._s, p
-    except Exception:
-        pass
+    except Exception as e:
+        # 조용히 넘어가면 안 된다. 이 폴백이 걸린 순간 팀 다이어트가 통째로
+        # 우회돼 메모리가 3배가 되는데, 답변은 그대로 나와서 아무도 모른다.
+        # 4GB 컨테이너에서는 그 상태로 OOM이 난다.
+        print("[선우] app.search 사용 불가 -> 자체 검색기로 폴백. "
+              "메모리 다이어트가 적용되지 않는다: %s" % e, file=sys.stderr)
     try:
         from search_patch import PatchedSearcher
     except ImportError:

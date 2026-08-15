@@ -1,6 +1,6 @@
 # Open형 방어 설계 (Open-Form Defense)
 
-> **대상 코드베이스:** `c:\Users\kangs\미래에셋증권 대회\agent\` (extract.py / main.py / slice1.py / slice3.py / slice4.py / slice5.py / slice6.py / verify.py) + `share_embeddings\search_lib.py`
+> **대상 코드베이스:** `server/app/sunwoo/` (extract.py / pipeline.py / slice1.py / slice3.py / slice4.py / slice5.py / slice6.py / verify.py) + `data/share_embeddings/search_lib.py`
 > **작성 기준일:** 2026-08-09 · **예선 마감:** 9/6
 > **전제 확인 완료:** 전 slice `temperature=0` (재현성 선결 조건 충족) / `verify.check_dates`에 8자리 날짜 패턴 반영됨 / `slice4`만 `[근거 idx/n]` 번호표 보유
 

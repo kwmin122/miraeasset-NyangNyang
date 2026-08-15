@@ -9,6 +9,10 @@ MANIFEST_PATH = find_path([
     "data/corpus/manifest.jsonl",
     "corpus/manifest.jsonl",
 ])
+if MANIFEST_PATH is None:
+    raise SystemExit(
+        "corpus/manifest.jsonl 을 찾지 못했다. data/corpus/ 를 배치한 뒤 다시 실행해라. "
+        "(data/ 는 용량 때문에 git에서 제외돼 있어 clone 직후에는 없다. README 참조)")
 docs = [json.loads(line) for line in open(MANIFEST_PATH, encoding="utf-8")]
 
 rcept_index = RCEPT_IDX

@@ -8,7 +8,8 @@ __pycache__/
 venv/
 
 # 환경변수·시크릿 (CLOVA API 키 등)
-.env
+.env*
+!.env.example
 *.pem
 
 # OS

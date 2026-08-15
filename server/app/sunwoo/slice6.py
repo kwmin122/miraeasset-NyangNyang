@@ -3,7 +3,7 @@ from slice1 import s, year_of, SLIM, with_text
 from slice3 import gather
 from hcx import call_hcx
 from attribute import (build_context, CITE_RULES, BALANCED_CONTRACT, CORRECTION_RULES,
-                       BASE_RULES, GUARD_RULES, TABLE_RULES)
+                       BASE_RULES, GUARD_RULES)
 
 ANNUAL_SECTIONS = ("주요 제품 및 서비스", "매출 및 수주")
 ANNUAL_HINT = ("매출 구성", "매출구성", "비중", "구성비", "품목별", "제품별")
