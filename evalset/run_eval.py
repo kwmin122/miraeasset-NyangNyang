@@ -18,7 +18,8 @@ LIMIT_MARKERS = ["확인되지 않", "확인할 수 없", "존재하지 않", "�
 
 
 def norm(s: str) -> str:
-    return re.sub(r"[,\s]", "", s or "")
+    # '*' 제거: HCX가 수치 일부만 볼드 처리(**19**%)하면 패턴이 별표로 쪼개짐 (S5b 실측)
+    return re.sub(r"[,\s*]", "", s or "")
 
 
 def call_api(base: str, q: dict) -> tuple[dict, float]:
