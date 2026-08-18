@@ -45,6 +45,12 @@ def _warmup() -> None:
         hits = search.search(CANARY_QUERY)
         if not hits:
             raise RuntimeError(f"카나리 검색 결과 0건: {CANARY_QUERY!r}")
+        # 에이전트 모듈까지 예열 (S9b). sunwoo 모드의 무거운 초기화(경량 색인 구축,
+        # chunk_meta.jsonl 1GB 파싱)는 전부 모듈 import 시점에 실행되므로 이 한 번의
+        # get_agent()로 끝난다. 실패는 warmup 실패로 취급 — 조용히 전 문항이
+        # LIMIT_ANSWER로 강등되는 것보다 /ready error로 크게 드러나는 쪽이 낫다.
+        # (LLM 호출은 하지 않음 — 키·크레딧 불필요)
+        get_agent()
         elapsed = round(time.time() - t0, 2)
         _ready_state["detail"] = None
         _ready_state["status"] = "ready"

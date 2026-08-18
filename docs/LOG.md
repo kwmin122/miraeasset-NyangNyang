@@ -621,3 +621,20 @@ modified: server/app/hcx.py             ← 내 변경
 - 새 코드로 8003 재기동 → /ready 200 → **dev 30문 재채점 17/30, 실패집합 기준선과 문항 단위 완전 동일**(회귀 0건).
 
 **선우 전달 사항**: `git pull` 후 서버 재기동만 하면 됨. 새로 만들 것 없음.
+
+---
+
+### 2026-08-18 — Fable S9: 선우 신고 결함 2건 수정 (Fable 직접 — 역할분리 예외: 소규모)
+
+**배경**: 선우가 에이전트 v1 머지(PR #2, b6f267e)와 함께 결함 2건 신고. Fable 코드 검증으로 둘 다 사실 확인. 선우 머지분 규정 준수도 확인: 타사 LLM 문자열 0건, HCX-005 엔드포인트(sunwoo/hcx.py:92), 계약 어댑터 SPEC §2 일치, requirements 추가는 `requests` 1건.
+
+**수정**:
+- **S9a** `server/Dockerfile`: `COPY server/vendor ./vendor`(8/10 vendor 폴백 도입 때 Dockerfile 미갱신 — 경욱 미스) + `COPY server/tools ./tools`(컨테이너 내 진단용). 경로는 search.py의 vendor 해석(/srv/vendor)과 일치 확인. 풀빌드 검증은 S7 NCP 빌드에서 (57분 빌드 회피).
+- **S9b** `server/app/main.py _warmup()`: 카나리 검색 후 `get_agent()` 1줄 추가. 선우 파이프라인의 무거운 초기화(경량 색인 구축·chunk_meta.jsonl 파싱, slice1.py:225,272)가 전부 모듈 import 시점 실행이므로 이것으로 예열 완성. 에이전트 초기화 실패 = /ready error (조용한 전문항 LIMIT_ANSWER 강등보다 크게 실패).
+
+**검증 (전부 Fable 직접 실측)**:
+- mock: 즉시 ready 불변.
+- baseline(8003): ready 후 30문 **17/30, 실패집합 문항 단위 동일** — 회귀 0건.
+- sunwoo(8004): 첫 기동 ready **15s**(slim_index.pkl 51MB 구축 포함) / 재기동 **11s**(캐시) / **ready 후 첫 /answer 0.07~0.11s** — 완료 기준(<2s) 충족. 수정 전에는 이 구축이 첫 평가 질의에 전가되던 것.
+- 부수 효과 실증: 첫 sunwoo 기동에서 `No module named 'requests'`가 **/ready error로 즉시 표면화** (선우 requirements 추가분이 기존 venv에 미설치). `uv pip install requests`로 해소. 수정 전이었다면 ready 200 후 전 문항 조용히 강등되는 시나리오.
+- 무키 상태 sunwoo 응답: 5필드 유지, 슬롯 추출 401 → 정중한 역질문 강등 (선우 파이프라인은 키 없으면 사실상 동작 불가 — **blind 검증은 CLOVA 키 발급 후에만 유의미**).

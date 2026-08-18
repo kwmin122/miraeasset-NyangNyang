@@ -8,6 +8,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY server/app ./app
 # S6 2순위 산출물(FAISS SQ8 재양자화본, ~0.53GB) — data/ 산출물이 아닌 우리 산출물이라 이미지에 포함.
 COPY server/artifacts ./artifacts
+# search_patch 폴백 사본 — 볼륨 마운트된 share_embeddings에 없을 때 이것으로 동작 (app/search.py가 /srv/vendor를 sys.path에 추가).
+COPY server/vendor ./vendor
+# 진단 스크립트(check_memory 등) — 컨테이너 안에서 다이어트 산출물·RSS 확인용.
+COPY server/tools ./tools
 
 # 임베딩 산출물(3GB)과 모델 캐시는 이미지에 굽지 않고 볼륨 마운트:
 #   docker run --cpus=2 --memory=4g -p 8000:8000 \
