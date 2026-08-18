@@ -4,7 +4,7 @@
 > 역사적 경위·실측 원문은 `docs/LOG.md`, 대회 개요·일정은 `docs/PLAN.md`, 계약은 `docs/SPEC.md`.
 > 새로 투입된 에이전트/세션은 **CLAUDE.md → 이 파일 → 담당 Brief(SLICES.md)** 순으로 읽으면 전체 맥락 확보 완료.
 
-*최종 갱신: 2026-08-10 (Fable, search_patch 배포 결함 수정 시점)*
+*최종 갱신: 2026-08-18 (Fable, S9·S10 완료 시점)*
 
 ## 우리가 누구고 뭘 하는가 (30초 요약)
 
@@ -24,6 +24,8 @@
 - **S6 완료(잠정 — NCP x86_64 재검증은 S7)**: 다이어트 3종 = bf16 로딩(`low_cpu_mem_usage`) + FAISS SQ8(2.1GB→0.53GB) + chunk_meta SQLite 지연조회. 전부 `server/app/search.py` 몽키패치(data/ 무수정, 산출물 없으면 원본 폴백). **4GB 컨테이너 /ready 200·OOMKilled=false·18문 11/18 동일·retrieved rcept_no 18/18 문항 fp32와 완전 일치**. host RSS 7.37→2.78GiB. 산출물은 `server/artifacts/`(git 제외, `server/tools/build_*.py`로 재생성)
 - **S4 완료**: 평가셋 **36문** = dev 30문(`questions_v1.jsonl`, ①11 ②3 ③3 ④5 ⑤4 ⑥4) + **blind 6문**(`questions_blind.jsonl`, 유형당 1문, **git외·선우 튜닝 비노출** — 과적합 방지 홀드아웃). 전부 원문 XML grep 검증(신규 67개), 정정공시 계보 alt_rcept_no 반영(기존 3문 소급 — TR-NAME-001 recall 0→1.0, T5-C-002 0.5→1.0). 채점기 확장: alt 인정·open must_not(`--legacy-grading` 롤백)·근거표시 참고컬럼. **폴백 기준선 dev 17/30 + blind 3/6 = 20/36** (기존 18문 실패집합 불변 — 회귀 0건). 실패 전부 HCX 필요 카테고리로 분류 완료
 - **S5a 완료**: HCX 클라이언트 골격 — 연결5s/응답30s 타임아웃 분리, 429·5xx·타임아웃 지수 backoff 재시도(1회), 예외 계층(호출부는 `HCXError` 하나만 캐치), `logs/hcx_usage.jsonl` 사용량 로깅(키·프롬프트 원문 절대 미기록), SYSTEM_PROMPT에 기간밖·상장전 거절(채점 마커 문구 강제)+프롬프트공격 무시 규칙, think_trace `[HCX 사용]`/`[폴백 사용]` 태그. 무키 30문 17/30 회귀 0건. **키를 `.env`에 넣는 순간 S5b는 측정만 남음**
+- **S9 완료 (2026-08-18)**: 선우 신고 결함 2건 — Dockerfile에 `vendor/`·`tools/` COPY 추가 + `/ready` 워밍업에 `get_agent()` 예열(선우 파이프라인 초기화 실패가 조용한 전문항 강등 대신 /ready error로 표면화). sunwoo 모드 ready 15s/첫응답 0.07s 실측
+- **S10 완료 (2026-08-18)**: 평가셋 **47문** = dev **38문**(30+신규 8) + blind **9문**(6+신규 3). 신규 11문은 명섭 지적(단일 qtype 가정 붕괴) 겨냥 5개 카테고리 — 다단계 정정추적·전건합산·상대시점 모호성·부재/혼합 함정(SPEC trap enum 신설, 채점기 무수정)·사명+정정 복합. 전부 원문 XML 검증. **폴백 기준선 dev 17/38 + blind 4/9** (기존 실패집합 회귀 0건, 신규 10/11 실패=전부 HCX 필요 카테고리 — 의도대로). 매핑표는 LOG 2026-08-18 S10
 
 ## 알려진 문제 (해결 주체 표시)
 
@@ -40,11 +42,11 @@
 
 ## 사용자(민경욱) 대기 항목 — 코드로 해결 불가
 
-- [ ] **NCP 가입 + 크레딧 신청** (2영업일 소요, 8월 중순까지 필요 — S7 차단 중)
-- [ ] **CLOVA Studio API 키 발급** (S5 차단 중. 키는 1회만 표시 → 바로 `.env`에만. 카톡·Git 절대 금지)
+- [x] ~~NCP 가입 + 크레딧 신청~~ — **완료 (2026-08-18)**: 예선 크레딧 20만원 발급 확인 (유효 2026-08-01~09-30, CLOVA Studio+서버 인스턴스 공용 차감 — 서버 인스턴스는 8월 말 리허설 직전 생성 권장)
+- [ ] **CLOVA Studio API 키 발급** (S5b·blind 검증 차단 중 — 크레딧 발급됐으므로 지금 가능. 키는 1회만 표시 → 바로 `.env`에만. 카톡·Git 절대 금지)
 - [x] ~~GitHub 원격 repo 생성 + push~~ — **완료 (2026-08-08)**: `github.com/kwmin122/miraeasset-NyangNyang` (private, main). blind·.env·data 미포함 검증됨
 - [ ] 팀 공유: repo 초대(선우·명섭) + README 팀원 섹션 안내 / 결함 #1~#3 → 명섭 / `data/` 전달(git외 5.2GB+2.9GB)
-- [ ] **blind 평가셋 백업**: `evalset/questions_blind.jsonl`·`candidates_s4.jsonl`은 git외 로컬 유일본 — 안전한 곳(개인 클라우드 등, 선우 접근 불가)에 사본 보관
+- [ ] **blind 평가셋 백업**: `evalset/questions_blind.jsonl`(**9문 — S10에서 3문 추가됨**)·`candidates_s4.jsonl`은 git외 로컬 유일본 — 안전한 곳(개인 클라우드 등, 선우 접근 불가)에 사본 보관
 
 ## 핵심 결정과 이유 (뒤집으려면 근거 필요)
 
@@ -63,12 +65,12 @@
 
 ```
 server/app/     main.py(라우팅) config.py(설정) search.py(검색 래퍼+libomp픽스) agents.py(3모드)
-evalset/        questions_v1.jsonl(dev 30문) questions_blind.jsonl(blind 6문, git외) run_eval.py(채점기)
+evalset/        questions_v1.jsonl(dev 38문) questions_blind.jsonl(blind 9문, git외) run_eval.py(채점기)
 data/           corpus/(5.2GB, git외) share_embeddings/(명섭 산출물 2.9GB, git외) — 읽기 전용
 docs/           SPEC(계약) PLAN(일정·전략) SLICES(작업큐) WORKFLOW(운영규칙) LOG(일지) CONTEXT(이 파일) RUNBOOK(사수·프리즈·철수)
 ```
 
 ## 다음 액션 (합의된 순서)
 
-~~S1~~ → ~~S2~~ → ~~S3~~ → ~~S6~~(잠정) → ~~S4~~ → ~~S5a~~ → ~~S8 문서분~~(RUNBOOK 골격) 완료.
-**NCP·CLOVA 키 없이 가능한 작업은 전부 소진.** 남은 것은 전부 사용자 차단 항목 해제 대기: S5b(CLOVA 키 — 꽂으면 측정만), S7(NCP 가입+크레딧), S8 본작업(S7 후 리허설). GitHub push·팀 공유도 사용자 액션.
+~~S1~~ → ~~S2~~ → ~~S3~~ → ~~S6~~(잠정) → ~~S4~~ → ~~S5a~~ → ~~S8 문서분~~ → ~~S9~~ → ~~S10~~ 완료.
+NCP 크레딧 발급 완료(2026-08-18) — 다음 병목은 **CLOVA Studio API 키**: 꽂히는 즉시 S5b(dev 38문 HCX 측정) + blind 9문으로 선우 v1 과적합 검증. S7(서버 인스턴스)은 크레딧 절약을 위해 8월 말 리허설 직전 생성. 이후 S8 본작업(리허설·프리즈).
