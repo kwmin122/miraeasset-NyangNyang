@@ -245,6 +245,27 @@ def pick_years(question, year):
         return None, None
     return base - 1, base
 
+def gather_year(corp, y, question, item):
+    """한 연도의 수치 근거와 배경 근거. answer_type6과 플래너의 yeartab 도구가 같이 쓴다.
+
+    반환 (수치 hits, 배경 bg, trace). 사업보고서 당기 표가 있으면 그걸 앞에 두고
+    벡터검색은 그 외 분만 채운다 — answer_type6이 하던 그대로다.
+    """
+    trace = []
+    annual = gather_annual(corp, y, question, item)
+    hits = gather(corp, y, item)
+    if annual:
+        keys = {(m.get("rcept_no"), m.get("section_id")) for m in annual}
+        hits = [h for h in hits
+                if (h.get("rcept_no"), h.get("section_id")) not in keys
+                and (h.get("base_month") or 12) == 12]
+        hits = annual + hits[:max(0, 3 - len(annual))]
+        trace.append(f"{y}년 사업보고서 당기 표 코드 추출 {len(annual)}건")
+    bg = gather_bg(corp, y, item)
+    trace.append(f"{y}년 수치 {len(hits)}건 / 배경 {len(bg)}건")
+    return hits, bg, trace
+
+
 def answer_type6(question, corp, year, item):
     trace = []
     item = item or ""
@@ -260,20 +281,9 @@ def answer_type6(question, corp, year, item):
 
     groups = []
     found, bg_all = [], []
-    used_annual = False
     for y in (y1, y2):
-        annual = gather_annual(corp, y, question, item)
-        hits = gather(corp, y, item)
-        if annual:
-            used_annual = True
-            keys = {(m.get("rcept_no"), m.get("section_id")) for m in annual}
-            hits = [h for h in hits
-                    if (h.get("rcept_no"), h.get("section_id")) not in keys
-                    and (h.get("base_month") or 12) == 12]
-            hits = annual + hits[:max(0, 3 - len(annual))]
-            trace.append(f"{y}년 사업보고서 당기 표 코드 추출 {len(annual)}건")
-        bg = gather_bg(corp, y, item)
-        trace.append(f"{y}년 수치 {len(hits)}건 / 배경 {len(bg)}건")
+        hits, bg, tr = gather_year(corp, y, question, item)
+        trace.extend(tr)
         if hits:
             found.append(y)
             groups.append((f"{y}년 수치", hits, 800))

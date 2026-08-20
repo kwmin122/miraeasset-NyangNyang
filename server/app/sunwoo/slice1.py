@@ -370,7 +370,13 @@ def search(query, k=5):
         return _patched.search(query, k=k)
     return s.search(query, k=k)
 
-def answer_type1(question, corp=None, year=None, item="", k=5):
+def retrieve(question, corp=None, year=None, item="", k=5):
+    """유형①②의 수집 부분 전체. 벡터검색 → 기업·연도 필터 → 정정교체 → 스코프 보강·재정렬.
+
+    answer_type1과 플래너의 find 도구가 같이 쓴다. 플래너 실측에서 이 보정들을
+    안 거친 맨 벡터검색만 쓰자 별도/연결·사명변경 문항이 한꺼번에 깨졌다.
+    찾는 일은 여기 한 곳에만 둔다.
+    """
     trace = []
     # k를 40에서 120으로 올린다. 기업·연도 필터가 사후라 후보 풀이 얇아서,
     # 정답 청크가 40위 밖에 있으면 뒤의 어떤 정렬도 소용이 없다.
@@ -398,7 +404,11 @@ def answer_type1(question, corp=None, year=None, item="", k=5):
     hits, moved = prefer_financial(hits, item)
     if moved:
         trace.append("재무제표 섹션 우선 정렬")
-    hits = hits[:k]
+    return hits[:k], trace
+
+
+def answer_type1(question, corp=None, year=None, item="", k=5):
+    hits, trace = retrieve(question, corp, year, item, k)
     if not hits:
         parts = []
         if corp:

@@ -1,4 +1,5 @@
 
+import threading
 import time
 from pathlib import Path
 
@@ -94,10 +95,44 @@ URL = ("https://clovastudio.stream.ntruss.com/v3/chat-completions/"
 
 TIMEOUT = (5, 60)
 
+# requests의 timeout은 (연결, 바이트 사이 간격)이지 전체 시간 상한이 아니다.
+# 엔드포인트가 스트리밍(clovastudio.stream)이라 서버가 60초 안에 조금씩만 보내면
+# 한 호출이 무한정 늘어난다. 실측으로 한 문항이 16,236초(4.5시간) 걸렸다.
+# 평가는 순차 호출이라 그 한 건이 전체를 멈춰 세운다. 벽시계 상한을 따로 건다.
+WALL_LIMIT = float(os.environ.get("HCX_WALL_LIMIT", "45"))
+
 RETRY_STATUS = (429, 500, 502, 503, 504)
 
 
-def call_hcx(messages, max_tokens=1000, temperature=0, retries=2):
+def _post_bounded(messages, max_tokens, temperature, wall):
+    """requests.post를 데몬 스레드에서 돌리고 벽시계로 끊는다.
+
+    끊긴 스레드는 남지만 데몬이라 프로세스 종료를 막지 않고, 결과는 버린다.
+    반환 (응답 or None, 예외 or None, 시간초과 여부)
+    """
+    box = {}
+
+    def run():
+        try:
+            box["res"] = requests.post(
+                URL,
+                headers={"Authorization": f"Bearer {API_KEY}"},
+                json={"messages": messages, "maxTokens": max_tokens,
+                      "temperature": temperature},
+                timeout=TIMEOUT,
+            )
+        except Exception as e:  # noqa: BLE001 - 스레드 밖으로 넘겨 호출부가 판단
+            box["err"] = e
+
+    th = threading.Thread(target=run, daemon=True)
+    th.start()
+    th.join(wall)
+    if th.is_alive():
+        return None, None, True
+    return box.get("res"), box.get("err"), False
+
+
+def call_hcx(messages, max_tokens=1000, temperature=0, retries=2, wall=None):
     """HCX를 부르고 (본문, 비고)를 돌려준다. 실패해도 예외를 던지지 않는다.
 
     반환
@@ -108,18 +143,19 @@ def call_hcx(messages, max_tokens=1000, temperature=0, retries=2):
     401(키 오류)이나 400(요청 형식 오류)은 몇 번을 다시 걸어도 같으므로 즉시 포기한다.
     """
     last = ""
+    budget = wall if wall is not None else WALL_LIMIT
+    started = time.monotonic()
     for attempt in range(retries + 1):
-        try:
-            res = requests.post(
-                URL,
-                headers={"Authorization": f"Bearer {API_KEY}"},
-                json={"messages": messages, "maxTokens": max_tokens,
-                      "temperature": temperature},
-                timeout=TIMEOUT,
-            )
-        except requests.exceptions.RequestException as e:
-            last = f"네트워크 {type(e).__name__}"
-            if attempt < retries:
+        left = budget - (time.monotonic() - started)
+        if left <= 1:
+            return None, f"API 호출 실패(시간초과 {budget:.0f}s)"
+        res, err, timed_out = _post_bounded(messages, max_tokens, temperature, left)
+        if timed_out:
+            # 재시도해도 같은 프롬프트라 또 늘어질 가능성이 높다. 남은 예산으로만 판단한다.
+            return None, f"API 호출 실패(응답 지연 {budget:.0f}s 초과)"
+        if err is not None:
+            last = f"네트워크 {type(err).__name__}"
+            if attempt < retries and (budget - (time.monotonic() - started)) > 3:
                 time.sleep(1.5 * (attempt + 1))
                 continue
             return None, f"API 호출 실패({last})"

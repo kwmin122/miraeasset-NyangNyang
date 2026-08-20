@@ -1,6 +1,8 @@
+import os
 import re
 
 from extract import extract
+from plan import answer_with_plan
 from slice1 import answer_type1
 from slice3 import answer_type3
 from slice4 import answer_type4
@@ -8,6 +10,12 @@ from slice5 import answer_type5
 from slice6 import answer_type6
 from verify import check_dates
 from attribute import parse_ev, check_grounding, check_hedging, trace_note
+
+# 기본값을 on으로 둔다. off가 기본이면 서버를 띄울 때 플래그를 깜빡하는 순간
+# 조용히 예전 구조(34/38)로 돌아가고 에러도 안 난다 — 알아챌 방법이 없다.
+# 되돌릴 수단은 남긴다. 프리즈 후 사수 기간에는 코드 수정이 금지되므로
+# 문제가 생기면 AGENT_PLAN=off + 재기동이 유일하게 허용되는 조치다.
+PLAN_ON = os.environ.get("AGENT_PLAN", "on").lower() not in ("off", "0", "false")
 
 
 def unify_units(text, ctx):
@@ -94,6 +102,17 @@ def normalize_slots(slots):
 
 
 def _answer_question(question):
+    if PLAN_ON:
+        # 플래너 경로를 먼저 시도한다. 계획이 반려되거나 합성이 실패하면 None이
+        # 돌아오고 아래 기존 단일 경로로 떨어진다. 최악의 경우에도 기존 점수가 남는다.
+        r, why = answer_with_plan(question)
+        if r is not None:
+            r["think_trace"] = "[플래너] " + r["think_trace"]
+            return clean(r)
+        plan_note = f"[플래너 폴백] {why}"
+    else:
+        plan_note = None
+
     slots = extract(question)
     if "error" in slots:
         return {"answer": "질의를 해석하지 못했습니다. 기업명과 연도, 찾으시는 항목을 함께 적어 다시 물어봐 주세요.",
@@ -101,7 +120,7 @@ def _answer_question(question):
                 "think_trace": f"슬롯 추출 실패: {str(slots.get('raw'))[:200]}"}
 
     qtype, corps, years, item = normalize_slots(slots)
-    trace = [f"슬롯: {slots}"]
+    trace = ([plan_note] if plan_note else []) + [f"슬롯: {slots}"]
 
     corp = corps[0] if corps else None
     year = years[-1] if years else None
