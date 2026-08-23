@@ -16,10 +16,11 @@ import re
 
 from slice1 import s, RCEPT_IDX, retrieve
 from slice4 import (docs, by_rcept, pick_keywords, group_chains,
-                    resolve_latest, asked_months, question_terms)
+                    resolve_latest, latest_version, asked_months, question_terms)
 from slice5 import as_item, first_text
 from slice6 import gather_year
 from extract import ALIAS
+from attribute import content_words
 
 CORPUS_FROM = 2023
 CORPUS_TO = 2026
@@ -132,8 +133,53 @@ def _root_of(d):
     return cur
 
 
+_LINK_CACHE = {}
+
+
+def _base_title(nm):
+    return re.sub(r"^\[[^\]]*\]", "", str(nm or "")).strip()
+
+
+def latest_of(d):
+    """최신 정정본을 찾되, correction_map에 빠진 연결을 조회 시점에 보완한다.
+
+    correction_map에 안 이어진 정정본이 484건 있다(에코프로비엠 신규시설투자가
+    그 예 — 원공시 2023-05-23, 정정본 2024-10-22가 남남으로 있다).
+    그러면 연도 필터가 정정본을 잘라내고 폐기된 값을 답한다.
+
+    원본 데이터는 건드리지 않는다. 명섭 형이 재임베딩으로 correction_map을
+    고치면 아래 보완은 그냥 안 걸리고 지나간다.
+
+    연결 조건은 좁게 잡았다. 느슨하게 하면 같은 제목의 별개 공시가 엮인다
+    (한 기업의 공급계약체결은 제목이 다 같아서 411건이 서로 엮인다).
+      ① 같은 기업 ② 정정표시 뗀 제목 동일 ③ 정정본이 원본보다 나중
+      ④ **정정본 본문에 원본의 접수일이 적혀 있다** (정정공시는 원공시의
+         이사회결의일·계약일을 본문에 다시 적는다)
+    실측: 484건 중 이 조건을 통과하는 것은 51건. 나머지는 진짜 별개 공시다.
+    """
+    lv = latest_version(d)
+    if lv["rcept_no"] != d["rcept_no"]:
+        return lv
+    rn = d["rcept_no"]
+    if rn in _LINK_CACHE:
+        return _LINK_CACHE[rn] or lv
+    dt, title = d["rcept_dt"], _base_title(d["report_nm"])
+    iso = f"{dt[:4]}-{dt[4:6]}-{dt[6:]}"
+    found = []
+    for c in docs:
+        if (not c.get("is_correction") or c["corp_name"] != d["corp_name"]
+                or c["rcept_dt"] <= dt or _base_title(c["report_nm"]) != title):
+            continue
+        t = _doc_body(c, 3000)
+        if iso in t or dt in t:
+            found.append(c)
+    best = max(found, key=lambda x: (x["rcept_dt"], x["rcept_no"])) if found else None
+    _LINK_CACHE[rn] = best
+    return best or lv
+
+
 def collect(corp, year=None, topic="", version="latest", recency=None,
-            date=None, month=None, limit=12, question=""):
+            date=None, month=None, limit=12, question="", filer=None):
     """manifest 목록 필터. slice4의 필터 체인과 같은 순서.
 
     version  latest   정정 체인을 최신본으로 교체 (기본, slice4와 동일)
@@ -141,10 +187,34 @@ def collect(corp, year=None, topic="", version="latest", recency=None,
              all      체인 전체를 접수일 순으로 (변화 과정을 물을 때)
     recency  latest   rcept_dt 내림차순 1건 — "가장 최근"을 코드가 정한다
     date     YYYYMMDD 특정 접수일 건만
+    filer    제출인(flr_nm). 지분공시는 남이 그 회사 지분을 신고하는 문서라
+             발행회사(corp_name)와 제출인이 항상 다르다(holding 1083건 전부).
+             "삼성전자가 레인보우로보틱스에 대해 제출한 보고서"에서
+             corp=레인보우로보틱스, filer=삼성전자다. 이 축이 없으면
+             corp=삼성전자로 걸려 엉뚱하게 삼성전자 자기 지분을 답한다(실측).
     """
     trace = []
-    cands = [d for d in docs if d["corp_name"] == corp]
+    # corp_name 을 그대로 비교하면 별칭이 통째로 0건이 된다.
+    # 코퍼스의 엔씨소프트 표기는 "NC"라서 collect("엔씨소프트")가 0건이었다(OQ-58).
+    # find 는 정규화를 거치므로 같은 질문이 find 로 가면 통과해 오래 안 드러났다.
+    # 정규화 이름으로 0건이면 원래 이름으로 되돌려 기존 동작을 보존한다.
+    _c = norm_corp(corp) if corp else corp
+    cands = [d for d in docs if d["corp_name"] == _c]
+    if not cands and _c != corp:
+        cands = [d for d in docs if d["corp_name"] == corp]
     trace.append(f"{corp} {len(cands)}건")
+
+    if filer:
+        f = str(filer).strip()
+        nar = [d for d in cands if f in str(d.get("flr_nm") or "")]
+        if not nar:  # 공백 표기 차이 대비
+            fc = f.replace(" ", "")
+            nar = [d for d in cands if fc in str(d.get("flr_nm") or "").replace(" ", "")]
+        if nar:
+            cands = nar
+            trace.append(f"제출인({f}) 필터 {len(cands)}건")
+        else:
+            trace.append(f"제출인({f}) 일치 0건 -> 필터 생략")
 
     if date:
         cands = [d for d in cands if d["rcept_dt"] == str(date).replace("-", "")]
@@ -187,8 +257,29 @@ def collect(corp, year=None, topic="", version="latest", recency=None,
         pairs = [(r, r) for r in roots.values()]
         trace.append(f"원본만 {len(pairs)}건")
     else:
-        grouped = group_chains(cands)
-        pairs = resolve_latest(grouped)
+        # resolve_latest를 그대로 쓰지 않는다. 그 함수는 최신본 기준으로 중복을
+        # 지우는데, 정정본 하나가 원공시 여러 건을 한꺼번에 정정하는 경우가 있다
+        # (한미약품 2023-08-01 3건이 2024-02-01 정정본 하나로 수렴).
+        # 그러면 3건이 1건으로 뭉쳐 "총 몇 건이냐"에 2건이라 답한다.
+        # 값을 물으면 최신본이 맞지만 개수를 물으면 원공시 개수가 맞다.
+        # 최신본이 같은 원공시가 둘 이상이면 원공시를 그대로 남겨 개수를 지킨다.
+        # 개수를 묻는 질문일 때만 원공시를 복원한다.
+        # 값을 물으면 원공시의 폐기된 값이 답에 쓰인다(LG엔솔 해지금액이
+        # 정정 전 4,082,377,000,000으로 나왔다). 둘은 반대 방향이라 질문으로 가른다.
+        counting = bool(re.search(r"몇 건|몇건|총 \d+\s*건|\d+\s*건", question or ""))
+        byl = {}
+        for orig in group_chains(cands):
+            lv = latest_of(orig)
+            byl.setdefault(lv["rcept_no"], []).append((lv, orig))
+        pairs, n_ex = [], 0
+        for gsub in byl.values():
+            if counting and len(gsub) > 1:
+                pairs += [(o, o) for _, o in gsub]
+                n_ex += len(gsub) - 1
+            else:
+                pairs += gsub[:1] if len(gsub) > 1 else gsub
+        if n_ex:
+            trace.append(f"개수 질문 + 한 정정본이 원공시 여럿 정정 -> 원공시 {n_ex}건 복원")
         trace.append(f"최신본 {len(pairs)}건")
 
     if question:
@@ -299,6 +390,11 @@ def compute(op, values):
         return vals[-1] - vals[0]
     if op == "pct_change" and len(vals) >= 2 and vals[0]:
         return (vals[-1] - vals[0]) / abs(vals[0]) * 100
+    if op == "ratio" and len(vals) >= 2 and vals[1]:
+        # 앞 값 ÷ 뒤 값을 백분율로. CAPEX÷매출, 배당성향 같은 비중 질문용이다.
+        # 이게 없어서 HCX가 직접 나눗셈을 하다 단위를 뭉갰다
+        # (삼성전자 CAPEX를 매출보다 큰 187조로 적고 그걸 11%라고 계산한 실측).
+        return vals[0] / vals[1] * 100
     if op == "max":
         return max(vals)
     if op == "min":
@@ -312,6 +408,24 @@ def fmt_num(v):
     if abs(v - round(v)) < 1e-9:
         return f"{int(round(v)):,}"
     return f"{v:,.2f}"
+
+
+def ko_amount(n):
+    """원 단위 정수를 '9조 6,030억원' 표기로 바꾼다. 조 미만은 None.
+
+    공시 원문은 금액을 원 단위 숫자로만 적는데 채점은 한글 단위 표기도 따로 요구한다
+    (T5-C-002 '9조 6,030억', T6-O-005 '12조 7,835억원' 실측). 억 미만은 버린다 —
+    원문에도 그렇게 적히고 반올림하면 없던 오차를 만든다.
+    """
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return None
+    if n < 10 ** 12:
+        return None
+    jo, rest = divmod(n, 10 ** 12)
+    eok = rest // 10 ** 8
+    return f"{jo}조 {eok:,}억원" if eok else f"{jo}조원"
 
 
 # ── 단계 검산 ───────────────────────────────────────────────────────────
@@ -334,7 +448,11 @@ def question_clues(question):
     """
     q = question or ""
     out = set(re.findall(r"[A-Z][A-Za-z0-9\-]{2,}", q))
-    out |= {w for w in re.findall(r"[가-힣]{3,}", q) if w not in _STOPQ}
+    # 한글은 content_words로 뽑는다. 정규식으로 그냥 자르면 조사가 딸려와
+    # "레인보우로보틱스에"가 단서가 되고, 근거에 "레인보우로보틱스"가 있어도
+    # 매칭이 안 돼 검산이 항상 미달로 나온다(실측: 단서 9개 중 0개 매칭).
+    # content_words는 조사를 떼고 흔한 서술어·의문사(STOP)도 걸러준다.
+    out |= {w for w in content_words(q) if len(w) >= 3 and w not in _STOPQ}
     out |= set(re.findall(r"\d[\d,]{3,}", q))
     return out
 

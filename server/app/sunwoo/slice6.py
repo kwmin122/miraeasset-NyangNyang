@@ -310,6 +310,10 @@ def answer_type6(question, corp, year, item):
 
     ask = (f"근거 자료 (총 {total}건):\n{context}질문: {question}\n"
            f"{y1}년과 {y2}년 각각의 수치를 반드시 모두 제시한 뒤 비교하라.")
+    # gather_annual 이 뽑은 확정치 블록이 실제로 근거에 들어갔을 때만 금액을 요구한다.
+    # gather_year 를 함수로 빼내는 리팩터링 때 이 변수 정의가 같이 사라져
+    # 폴백 경로(플래너 미사용·플래너 실패)가 NameError 로 통째로 죽어 있었다.
+    used_annual = "[코드추출·확정치]" in context
     if used_annual:
         # 비중만 답하고 금액을 빠뜨리는 일이 실측으로 반복됐다. 채점은 원문 수치
         # 문자열 일치라 금액이 빠지면 비중을 맞혀도 미달이 난다.
