@@ -440,6 +440,31 @@ _STOPQ = {"얼마", "무엇", "어디", "어떻게", "누구", "몇", "각각", 
           "알려줘", "인가", "인지", "된다", "한다", "이다"}
 
 
+def coverage(corp):
+    """그 기업이 코퍼스에 언제부터 들어와 있는지와, 그것을 증명할 정기보고서.
+
+    부재를 단언할 때 근거로 쓴다. 신규 상장사는 상장일이 최초 정기보고서 본문에
+    적혀 있어서, 그 한 건만 붙여도 "왜 그 해 자료가 없는지"가 증명된다.
+    반환 (최초접수일, 최종접수일, 근거 아이템 목록). 기업이 없으면 (None, None, []).
+    """
+    if not corp:
+        return None, None, []
+    _c = norm_corp(corp)
+    cands = [d for d in docs if d["corp_name"] == _c]
+    if not cands and _c != corp:
+        cands = [d for d in docs if d["corp_name"] == corp]
+    if not cands:
+        return None, None, []
+    first = min(d["rcept_dt"] for d in cands)
+    last = max(d["rcept_dt"] for d in cands)
+    per = sorted((d for d in cands if d.get("doc_group") == "periodic"),
+                 key=lambda d: d["rcept_no"])
+    items = []
+    if per:
+        items.append(_doc_item(per[0], budget=1200,
+                               note="코퍼스에 수록된 이 기업의 최초 정기보고서"))
+    return first, last, items
+
 def question_clues(question):
     """질문에서 근거와 대조할 고유 단서를 뽑는다.
 

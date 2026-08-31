@@ -18,7 +18,13 @@ COPY server/tools ./tools
 #     -v $(pwd)/data/share_embeddings:/srv/data/share_embeddings \
 #     -v hf_cache:/root/.cache/huggingface \
 #     --env-file .env -e EMB_DIR=/srv/data/share_embeddings 공시agent
-ENV EMB_DIR=/srv/data/share_embeddings \
+# AGENT_MODE 를 이미지에 박아둔다. config.py 기본값은 mock(더미 응답)이고
+# 배포는 서버에서 손으로 쓴 .env 를 --env-file 로 읽는 구조라, 그 파일에
+# AGENT_MODE 한 줄을 빠뜨리면 심사에 더미 응답이 나간다(전 문항 0점).
+# --env-file 값이 이 ENV 를 덮으므로 모드를 바꿀 자유는 그대로 남는다.
+# 제출 전 확인: curl .../health -> {"agent_mode":"sunwoo"}
+ENV AGENT_MODE=sunwoo \
+    EMB_DIR=/srv/data/share_embeddings \
     LOG_PATH=/srv/logs/requests.jsonl
 
 EXPOSE 8000

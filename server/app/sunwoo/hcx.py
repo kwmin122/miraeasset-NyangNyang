@@ -99,9 +99,23 @@ TIMEOUT = (5, 60)
 # 엔드포인트가 스트리밍(clovastudio.stream)이라 서버가 60초 안에 조금씩만 보내면
 # 한 호출이 무한정 늘어난다. 실측으로 한 문항이 16,236초(4.5시간) 걸렸다.
 # 평가는 순차 호출이라 그 한 건이 전체를 멈춰 세운다. 벽시계 상한을 따로 건다.
-WALL_LIMIT = float(os.environ.get("HCX_WALL_LIMIT", "45"))
+WALL_LIMIT = float(os.environ.get("HCX_WALL_LIMIT", "60"))
 
 RETRY_STATUS = (429, 500, 502, 503, 504)
+
+# 429는 분당 쿼터라 1.5초로는 안 풀린다. 58문 실측(2026-08-30)에서 3개 문항이
+# 429를 맞았고 재시도 3회(1.5s+3s)가 전부 다시 429를 받아 2문항이 통째로 죽었다.
+# (TR-NAME-001, T4-O-001 — 둘 다 "답변을 생성하지 못했습니다"로 집계돼 -2점)
+# 429만 백오프를 길게 잡는다. 다른 사유(5xx·네트워크)는 짧은 재시도가 맞다.
+# 백오프 총량은 지연과 맞바꾸는 값이다. SPEC 은 p95 < 20s 를 목표로 잡고
+# "응답 속도가 평가 기준일 수 있음"이라 적어뒀다. (4,9,15)=28s 로 재보니
+# 429 구간에서 문항 지연이 62초까지 갔다. 회수는 유지하되 최악값을 묶는다.
+BACKOFF_429 = (3.0, 7.0, 12.0)
+BACKOFF_OTHER = (1.5, 3.0, 4.5)
+
+
+def _nap(sched, attempt):
+    return sched[min(attempt, len(sched) - 1)]
 
 
 def _post_bounded(messages, max_tokens, temperature, wall):
@@ -132,7 +146,7 @@ def _post_bounded(messages, max_tokens, temperature, wall):
     return box.get("res"), box.get("err"), False
 
 
-def call_hcx(messages, max_tokens=1000, temperature=0, retries=2, wall=None):
+def call_hcx(messages, max_tokens=1000, temperature=0, retries=3, wall=None):
     """HCX를 부르고 (본문, 비고)를 돌려준다. 실패해도 예외를 던지지 않는다.
 
     반환
@@ -155,14 +169,20 @@ def call_hcx(messages, max_tokens=1000, temperature=0, retries=2, wall=None):
             return None, f"API 호출 실패(응답 지연 {budget:.0f}s 초과)"
         if err is not None:
             last = f"네트워크 {type(err).__name__}"
-            if attempt < retries and (budget - (time.monotonic() - started)) > 3:
-                time.sleep(1.5 * (attempt + 1))
+            nap = _nap(BACKOFF_OTHER, attempt)
+            if attempt < retries and (budget - (time.monotonic() - started)) > nap + 2:
+                time.sleep(nap)
                 continue
             return None, f"API 호출 실패({last})"
 
         if res.status_code in RETRY_STATUS and attempt < retries:
             last = f"HTTP {res.status_code}"
-            time.sleep(1.5 * (attempt + 1))
+            nap = _nap(BACKOFF_429 if res.status_code == 429 else BACKOFF_OTHER, attempt)
+            # 남은 예산이 백오프보다 짧으면 헛되이 자지 않고 바로 포기한다.
+            # (플래너는 wall=20으로 부르므로 여기서 자면 폴백 경로까지 굶는다)
+            if (budget - (time.monotonic() - started)) <= nap + 2:
+                return None, f"API오류 {res.status_code}"
+            time.sleep(nap)
             continue
 
         if res.status_code != 200:

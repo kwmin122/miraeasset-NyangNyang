@@ -14,6 +14,14 @@ HCX는 여전히 두 번만 부른다. 달라진 건 첫 호출이 '유형 번�
 import json
 import re
 
+import os
+
+# 코드 보정 스위치 — 명섭 형 제안(라우터 보정을 LLM에 맡기기)을 같은 평가셋으로
+# 재보기 위한 A/B 장치다. AGENT_FIX=off 면 "LLM 계획을 코드가 되돌리는" 부분을
+# 전부 건너뛴다. 끄는 것은 판단 교정뿐이고, 기업명 정규화 같은 버그 수정과
+# 스키마 검증은 남긴다 — 버그까지 되살리면 공정한 비교가 아니다.
+FIX_ON = os.environ.get("AGENT_FIX", "on").lower() not in ("off", "0", "false")
+
 from hcx import call_hcx
 from extract import strip_fence
 from attribute import (build_context, BASE_RULES, GUARD_RULES, CORRECTION_RULES,
@@ -99,6 +107,81 @@ def make_plan(question):
     return plan, note
 
 
+# 제목만으로 특정되는 사건성 공시 어휘. collect 로 보낼지 판단하는 데만 쓴다.
+_EVENT_WORDS = (r"유상증자|무상증자|전환사채|교환사채|신주인수권|사채\s*발행|"
+                r"자기주식|자사주|공급계약|수주|시설투자|설비투자|투자판단|"
+                r"주요경영사항|합병|분할|영업양수|영업양도|배당|신탁계약|"
+                r"최대주주|대량보유|임상|낙찰|시공자")
+
+
+def code_plan(question):
+    """HCX 없이 계획을 만든다. 계획 호출이 API 실패로 죽었을 때 쓰는 대체 경로.
+
+    반환 plan dict 또는 None(기업을 못 찾으면 코드가 세울 근거가 없다).
+    validate() 를 통과하는 형태로만 만든다.
+    """
+    q = question or ""
+    names, _ = T._corp_tables()
+    in_q = sorted([n for n in names if n in q or n.replace(" ", "") in q.replace(" ", "")],
+                  key=len, reverse=True)
+    # 긴 이름이 짧은 이름을 품는 경우(현대자동차 vs 현대차)를 걷어낸다
+    corps = []
+    for n in in_q:
+        if not any(n in c for c in corps):
+            corps.append(n)
+    if not corps:
+        corps = [T.norm_corp(a) for a in T.ALIAS if a in q]
+    corps = [c for c in dict.fromkeys(corps) if c][:2]
+    if not corps:
+        return None
+
+    years = sorted({int(y) for y in re.findall(r"20\d{2}", q)})
+    if re.search(r"이후 어떻게|이후에 어떻게|후속|결국|해지된|해지됐|해지되|취소된|철회", q):
+        tool = "trace"
+    elif re.search(r"매출\s*구성|구성비|비중|품목별|제품별", q) and len(years) >= 2:
+        tool = "yeartab"
+    # "3건의 계약금액 합계"처럼 앞에 '총'이 없는 건수 표기를 놓쳤다(오프라인 검증).
+    elif re.search(r"\d+\s*건|몇\s*건|모두 찾|전부|각 건|건별|공시한 건|정리해", q) \
+            and re.search(_EVENT_WORDS, q):
+        tool = "collect"
+    else:
+        tool = "find"
+
+    topic = " ".join(sorted(c for c in T.question_clues(q)
+                            if not any(c in n or n in c for n in corps)))[:80]
+    if not topic:
+        topic = "주요 내용"
+
+    steps, n = [], 1
+    for c in corps:
+        for y in (years or [None]):
+            if len(steps) >= 6:
+                break
+            st = {"id": f"c{n}", "tool": tool, "corp": c, "topic": topic,
+                  "version": "latest"}
+            if y is not None:
+                st["year"] = y
+            steps.append(st)
+            n += 1
+    # trace 는 date 또는 year 가 있어야 validate 를 통과한다. 없으면 find 로 낮춘다.
+    if tool == "trace" and not years:
+        for st in steps:
+            st["tool"] = "find"
+    # yeartab 도 year 필수다.
+    if tool == "yeartab" and not years:
+        for st in steps:
+            st["tool"] = "find"
+
+    if re.search(r"이후 어떻게|후속|결국|경과", q):
+        mode = "timeline"
+    elif len(steps) >= 2:
+        mode = "compare"
+    elif re.search(r"몇\s*건|모두|각각|전부|건별", q):
+        mode = "list"
+    else:
+        mode = "single"
+    return {"steps": steps, "answer": {"mode": mode, "inputs": [st["id"] for st in steps]}}
+
 def validate(plan):
     """계획이 말이 되는지 코드가 본다. 기존 라우터 보정 규칙이 여기로 옮겨왔다.
 
@@ -159,6 +242,14 @@ def _year_list(y):
 
 _RECENCY_WORDS = ("가장 최근", "최근", "최신", "마지막", "제일 최근")
 
+# 재무제표·사업보고서 표에 이미 합계가 적혀 있는 항목들. 이런 항목의 '합계'는
+# 개별 공시를 더해서 만드는 값이 아니다. PLAN_SYSTEM 도 "매출액·영업이익·수주잔고
+# 같은 개별 수치는 find"라고 적어뒀지만, 같은 프롬프트의 "'합계'면 collect 뒤에
+# compute(sum)" 규칙과 충돌해서 진다. 프롬프트끼리 부딪히는 건 코드가 끊는다.
+_STMT_SUM = re.compile(
+    r"(수주잔고|자산총계|부채총계|자본총계|매출액|영업이익|당기순이익|매출총이익|"
+    r"영업수익|연구개발비|자본금|이익잉여금)[^.?!\n]{0,12}?(합계|총액|총합)")
+
 
 def sanitize(plan, question):
     """플래너 출력의 알려진 실수를 코드가 되돌린다. LLM 선택을 코드가 검산하는 자리다.
@@ -180,6 +271,8 @@ def sanitize(plan, question):
             st["corp"] = c
         if c and (str(c).isdigit() or T.norm_corp(c) not in names) and fallback:
             st["corp"] = fallback[0]
+        if not FIX_ON:
+            continue          # A/B: 판단 교정은 건너뛴다 (corp 교정은 위에서 이미 끝)
         if st.get("recency") and not any(w in q for w in _RECENCY_WORDS):
             st["recency"] = None
         # 질문에 연도가 하나도 없는데 플래너가 연도를 지어냈으면 뗀다.
@@ -232,6 +325,9 @@ def sanitize(plan, question):
             ai = (plan.get("answer") or {}).get("inputs")
             if isinstance(ai, list):
                 ai.append("_tr")
+
+    if not FIX_ON:
+        return plan       # A/B: 도구 전환·구어 사전·단계 보강을 건너뛴다
 
     # yeartab 은 연도 대조용이다. 계획 전체에 yeartab 이 하나뿐이면 단일 연도 수치 질문인데,
     # 그 경로(slice6)는 별도/연결 보강이 없어 find(slice1.retrieve)로 보내야 맞는 값을 집는다.
@@ -307,21 +403,52 @@ def sanitize(plan, question):
             plan.setdefault("answer", {})["mode"] = "compare"
 
     # ② "합계·총액" → 파이썬이 더한다. compute가 없으면 붙인다
+    #
+    # 단, 재무제표·사업보고서 항목의 합계는 예외다. 그 합계는 표에 이미 적혀 있고
+    # 개별 공시를 더해서 만드는 값이 아니다. 아래 가드가 원래 "collect 면 붙인다"였는데,
+    # 플래너가 재무제표 항목을 엉뚱한 collect 로 옮겨 놓으면 그대로 뚫렸다.
+    # 실측(T6-O-005): "수주잔고 합계"에 collect(공급계약 체결)가 세워져 있어
+    # 공급계약 12건 합계를 [코드계산] 확정치로 답에 주입했다. 축을 도구가 아니라
+    # 질문이 가리키는 항목으로 바꾼다.
+    stmt = _STMT_SUM.search(q)
+    if stmt:
+        # 플래너가 스스로 낸 collect 합산도 같은 이유로 걷어낸다.
+        by_id = {st.get("id"): st for st in steps}
+        drop = {st.get("id") for st in steps
+                if st.get("tool") == "compute" and str(st.get("op")) == "sum"
+                and any((by_id.get(i) or {}).get("tool") == "collect"
+                        for i in (st.get("inputs") or []))}
+        if drop:
+            steps[:] = [st for st in steps if st.get("id") not in drop]
+            ai = (plan.get("answer") or {}).get("inputs")
+            if isinstance(ai, list):
+                ai[:] = [i for i in ai if i not in drop]
     if (re.search(r"합계|총액|모두 합|합쳐|총 얼마", q)
             and not any(st.get("tool") == "compute" for st in steps) and len(steps) < 8):
-        # collect(개별 공시 나열)에만 붙인다. yeartab/find 는 정기보고서 표라
-        # 합계가 이미 문서에 적혀 있고, 거기에 자동 합산을 붙이면 엉뚱한 금액을
-        # 더한다(실측: "수주잔고 합계" 질문에 공급계약 금액들을 합산해 답을 오염).
         src = [st["id"] for st in steps if st.get("tool") == "collect"]
-        if src:
+        if src and not stmt:
             steps.append({"id": "_sum", "tool": "compute", "inputs": src[:1], "op": "sum"})
             ai = (plan.get("answer") or {}).get("inputs")
             if isinstance(ai, list):
                 ai.append("_sum")
+    # 합산을 막았으면 그 항목을 본문에서 읽어 올 단계를 대신 세운다.
+    # 빼기만 하면 근거가 사라져 "확인할 수 없음"이 되므로, 빼고 그만큼 보탠다.
+    if stmt and len(steps) < 8:
+        item = stmt.group(1)
+        base = next((st for st in steps if st.get("corp")), None)
+        if base and not any(st.get("tool") == "find" and item in str(st.get("topic") or "")
+                            for st in steps):
+            steps.append({"id": "_stmt", "tool": "find", "corp": base.get("corp"),
+                          "year": base.get("year"), "topic": item, "version": "latest"})
+            ai = (plan.get("answer") or {}).get("inputs")
+            if isinstance(ai, list):
+                ai.append("_stmt")
     return plan
 
 
 def _relax(items, tr, corp, st, years, question):
+    if not FIX_ON:
+        return items, tr      # A/B: 조건 완화를 건너뛴다
     q = question or ""
     """수집이 질문과 안 맞으면 조건을 하나씩 풀어 다시 찾는다.
 
@@ -413,7 +540,7 @@ def execute(plan, question):
                 # 0건일 때만 승격하던 조건으로는 안 걸린다 — 제목 후보가 91건이나 잡히고도
                 # 그중 어느 것에도 답이 없는 경우가 있다(OQ-59).
                 # 건수를 묻는 질문은 제외한다. 근거가 바뀌면 세는 대상이 달라진다.
-                _clues = T.question_clues(question)
+                _clues = T.question_clues(question) if FIX_ON else []
                 _miss = (not items) or (_clues and not T.clue_hits(items, _clues))
                 # 제목 키워드 필터가 실제로 후보를 좁혔으면 그 topic 은 제목에 실재한다.
                 # 그때는 승격하지 않는다 — 질문이 구어면 단서("쪼갠", "게임사업")가
@@ -437,7 +564,7 @@ def execute(plan, question):
                         else:
                             items = items2
                             tr = tr + ["제목 검색이 질문 단서를 못 담음 -> 본문 검색 승격"] + tr2
-                n_req = st.get("count")
+                n_req = st.get("count") if FIX_ON else None
                 if n_req and isinstance(n_req, int) and len(items) > n_req:
                     # 질문이 건수를 명시했는데 후보가 더 많으면 코드가 고른다.
                     # 질문의 영문 약어(VLGC·VLAC)·숫자·기업명이 본문에 얼마나 나오는지로 점수.
@@ -513,9 +640,12 @@ SYNTH_SYSTEM = (
     "단계 메모에 '확인할 수 없음' 또는 '공시가 없음'이 있으면 그 부분은 그 문구를 한 글자도 바꾸지 말고 "
     "'~은(는) 확인할 수 없습니다' 형태로 답에 적어라. '알 수 없다', '찾지 못했다'로 바꿔 쓰지 마라. "
     "'[코드계산]' 또는 '[코드추출·확정치]' 표시가 붙은 수치는 코드가 뽑은 확정값이다. "
-    "소수점 포함 숫자를 그대로 옮겨 적어라. 반올림·어림·재계산 금지. 55.83%를 56%로 쓰면 오답이다. "
-    "질문이 금액·수치를 물으면 증감률만 쓰지 말고 근거 원문에 적힌 수치 표기(예: 12조 7,835억원, 34,495,064)를 "
+    # 예시 숫자는 평가셋에 없는 값으로 만든다. 골드 값을 예시로 쓰면 과적합이고
+    # 심사에서 부정행위로 읽힌다(제출검수에서 55.83 = T6-O-002 정답으로 적발).
+    "소수점 포함 숫자를 그대로 옮겨 적어라. 반올림·어림·재계산 금지. 12.34%를 12%로 쓰면 오답이다. "
+    "질문이 금액·수치를 물으면 증감률만 쓰지 말고 근거 원문에 적힌 금액 표기를 "
     "그 표기 그대로 먼저 적고, 비율은 그 뒤에 덧붙여라. "
+    "'전년 대비 N% 증가'처럼 비율만 적고 금액을 빼면 오답이다. "
     "질문이 세부 항목(자금 용도별 금액, 이자율, 수량, 조건)을 물으면 근거에 있는 숫자를 하나도 빠뜨리지 말고 적어라. "
     "정정 체인(원본→N차 정정)이 제공되면 원본과 최종본의 값을 각각 밝히고 무엇이 바뀌었는지 적어라. "
     + BASE_RULES + GUARD_RULES + CORRECTION_RULES + SCOPE_RULES + CITE_RULES + BALANCED_CONTRACT
@@ -603,6 +733,122 @@ def synthesize(question, plan, results):
     return text, context, note
 
 
+_OFF_NUM = re.compile(r"\d[\d,]{2,}|\d+(?:\.\d+)?\s*%")
+
+
+def _compose_offline(question, plan, results, context, trace):
+    """합성 호출이 죽었을 때 이미 모은 근거로 코드가 답을 만든다. HCX 호출 0회.
+
+    질문이 물은 항목·단서가 든 문장만 근거에서 원문 그대로 옮긴다.
+    지어내지 않고, 근거에 없으면 그 줄을 만들지 않는다.
+
+    실측(2026-08-31 429 폭풍): 10문에 발동해 4문만 통과했다. 정답이 근거엔 다 있는데
+    (ev=1.00) 옮긴 문장엔 없었다. 세 가지를 고쳤다.
+      ① 줄바꿈을 먼저 뭉개서 표 전체가 한 덩어리가 됐다 -> 줄 단위로 먼저 쪼갠다
+      ② 그 덩어리를 220자에서 잘라 뒤쪽 값이 날아갔다 -> 단서 주변을 남기고 자른다
+      ③ 등장 순서대로 3개 -> 질문 단서와 겹치는 순으로 점수를 매겨 고른다
+    그리고 표 안에 흩어진 값은 문장 선별로 못 잡아서, 단서 옆 수치를 따로 모은다.
+    """
+    clues = {c for c in T.question_clues(question) if len(c) >= 2}
+
+    def _score(seg):
+        return sum(3 for c in clues if c in seg) + min(len(_OFF_NUM.findall(seg)), 4)
+
+    def _trim(seg, limit=260):
+        """단서가 뒤쪽에 있으면 앞을 자르지 말고 단서 주변을 남긴다.
+        앞에서부터 220자로 자르던 게 표 뒤쪽 값을 통째로 날린 원인이다."""
+        if len(seg) <= limit:
+            return seg
+        hits = [seg.find(c) for c in clues if c in seg]
+        if hits:
+            pos = min(hits)
+        else:
+            m = _OFF_NUM.search(seg)
+            pos = m.start() if m else 0
+        a = max(0, pos - 60)
+        return ("…" if a else "") + seg[a:a + limit] + ("…" if a + limit < len(seg) else "")
+
+    lines, seen, texts = [], set(), []
+    for st in plan.get("steps", []):
+        r = results.get(st.get("id")) or {}
+        for it in (r.get("items") or [])[:6]:
+            head = f"{it.get('report_nm', '')} ({it.get('rcept_dt', '')}, {it.get('rcept_no', '')})"
+            raw = it.get("text") or ""
+            texts.append(raw)
+            # 줄바꿈을 먼저 쪼갠다. 뭉개고 나서 쪼개면 표가 통째로 한 덩어리가 된다.
+            segs = []
+            for seg in re.split(r"\n+|(?<=[.。])\s+", raw):
+                seg = re.sub(r"[ \t]+", " ", seg).strip()
+                if len(seg) >= 6 and seg not in seen:
+                    segs.append(seg)
+            cand = sorted((s2 for s2 in segs if _score(s2) > 0), key=_score, reverse=True)
+            picked = []
+            for seg in cand[:12]:
+                seen.add(seg)
+                picked.append(_trim(seg))
+            if picked:
+                lines.append(f"- {head}\n  " + "\n  ".join(picked))
+        if len(lines) >= 8:
+            break
+    if not lines:
+        return None
+
+    # 표 안에 흩어진 값은 문장 선별로 안 잡힌다.
+    # 실측 T2-O-002 는 정답 5개(ROA·ROE·예대금리차·NIM)가 전부 표에 있었고 답변엔 0개였다.
+    # 질문 단서 바로 옆 수치만 원문 그대로 모아 붙인다 — 없는 값은 만들지 않는다.
+    flat = re.sub(r"\s+", " ", " ".join(texts))
+    pairs = []
+    # clues 는 set 이라 길이만으로 정렬하면 동점끼리 순서가 실행마다 바뀐다.
+    # 그러면 같은 입력에 다른 답이 나가고 측정을 믿을 수 없게 된다(실측으로 4~6문 오갔다).
+    # 길이 내림차순 + 사전순으로 완전 정렬해 결정적으로 만든다.
+    for c in sorted(clues, key=lambda x: (-len(x), x))[:10]:
+        for m in re.finditer(re.escape(c) + r"[^0-9%\n]{0,12}?(\d[\d,]*(?:\.\d+)?\s*%?)", flat):
+            v = re.sub(r"\s+", " ", m.group(0)).strip()
+            if v not in pairs:
+                pairs.append(v)
+            if len(pairs) >= 12:
+                break
+        if len(pairs) >= 12:
+            break
+
+    trace.append("합성 실패 -> 코드가 근거 원문으로 답 구성(호출 0회)")
+    out = ("아래는 제공된 공시 근거에서 질문과 관련해 확인된 내용입니다. "
+           "원문 표기를 그대로 옮겼습니다.\n\n" + "\n".join(lines))
+    if pairs:
+        out += "\n\n※ 근거에서 질문 항목 옆에 적힌 수치: " + " / ".join(pairs) + "."
+    return out
+
+def evidence_only_answer(question, lead=""):
+    """HCX 없이 근거만 모아 코드가 답을 만든다. 생성 호출 0회.
+
+    거짓 전제 질문에 쓴다. 전제는 거절해야 하지만 근거까지 비우면 근거완전성을
+    잃는다(실측: TR-ATK-004 가 가드 도입으로 ev 1.00 -> 0.00). 검색은 하되
+    문장 생성은 코드가 맡아, 전제를 받아들이지 않으면서 공시 원문 값을 보여준다.
+
+    반환 (답변, retrieved_context, trace리스트). 만들 수 없으면 (None, "", []).
+    """
+    plan = code_plan(question)
+    if plan is None:
+        return None, "", []
+    ok, _why = validate(plan)
+    if not ok:
+        return None, "", []
+    plan = sanitize(plan, question)
+    results = execute(plan, question)
+    trace = [f"코드 계획 {len(plan.get('steps', []))}단계 -> 근거만 수집(생성 호출 0회)"]
+
+    items = [it for st in plan.get("steps", [])
+             for it in ((results.get(st.get("id")) or {}).get("items") or [])]
+    if not items:
+        return None, "", trace
+    context, _ev, _n = build_context(items[:8], start=1, label="근거", max_chars=1200,
+                                     total=min(len(items), 8))
+    body = _compose_offline(question, plan, results, context, trace)
+    if not body:
+        return None, context, trace
+    return ((lead + "\n\n" + body) if lead else body), context, trace
+
+
 def _label(st):
     """단계 라벨. 플래너 출력은 어느 필드든 리스트로 올 수 있어 전부 str로 감싼다."""
     def _s(v):
@@ -630,7 +876,7 @@ def _label(st):
     return " ".join(p for p in parts if p)
 
 
-def _abstain(question, plan, results):
+def _abstain(question, plan, results, cov_note=""):
     """수집 단계가 전부 비었을 때 코드가 직접 기권문을 쓴다.
 
     이걸 HCX에 맡기면 '공시가 없어 제공할 수 없습니다'처럼 문구를 바꿔 써서
@@ -648,15 +894,53 @@ def _abstain(question, plan, results):
         else:
             parts.append(f"{_label(st)}에 해당하는 공시는 제공된 데이터에서 확인되지 않습니다")
     body = " ".join(dict.fromkeys(parts)) if parts else "해당 내용은 공시에서 확인되지 않습니다"
-    return body + ". 기업명·연도·항목을 확인해 주세요."
+    out = body + "."
+    # 왜 없는지를 코퍼스 수록 범위로 밝힌다. 상장 전이라 문서가 아예 없는 것과
+    # 우리가 못 찾은 것은 다르고, 전자는 코드가 증명할 수 있는 사실이다.
+    # 거절 마커("확인되지 않")는 위 body 에 이미 들어 있으므로 뒤에 덧붙여도 안전하다.
+    if cov_note:
+        out += " " + cov_note
+    return out + " 기업명·연도·항목을 확인해 주세요."
 
+
+def _coverage_evidence(plan, question):
+    """기권할 때 붙일 '수록 범위' 문장과 근거 컨텍스트를 만든다.
+
+    질문이 물은 해가 코퍼스 수록 시작보다 이르면 그 사실을 명시한다.
+    그 밖에는 범위만 밝힌다 — 없는 이유를 지어내지 않는다.
+    """
+    corp = next((st.get("corp") for st in plan.get("steps", []) if st.get("corp")), None)
+    if not corp:
+        return "", ""
+    first, last, items = T.coverage(corp)
+    if not first:
+        return "", ""
+    ys = [int(y) for y in re.findall(r"20\d{2}", question or "")]
+    note = (f"제공된 데이터에 수록된 {corp} 공시는 {first[:4]}년 {int(first[4:6])}월부터 "
+            f"{last[:4]}년 {int(last[4:6])}월까지입니다.")
+    if ys and min(ys) < int(first[:4]):
+        note += f" 질문하신 {min(ys)}년은 그 이전이라 해당 공시가 존재하지 않습니다."
+    ctx = ""
+    if items:
+        ctx, _, _ = build_context(items, start=1, label="수록 범위 근거",
+                                  max_chars=1200, total=1)
+    return note, ctx
 
 def answer_with_plan(question):
     """플래너 경로 전체. 실패하면 None을 돌려주고 pipeline이 기존 경로로 간다."""
     trace = []
     plan, note = make_plan(question)
     if plan is None:
-        return None, f"계획 실패: {note}"
+        # API 실패(429·타임아웃·네트워크)면 폴백으로 내려보내지 않는다.
+        # 그 경로가 호출을 두 번 더 써서, 쿼터가 마른 상황에 기름을 붓는다.
+        # 코드 계획 + 합성이면 1회로 끝난다. 계획 내용이 나빠서 실패한 경우
+        # (JSON 파싱 실패 등)는 기존대로 폴백에 맡긴다 — 그건 쿼터 문제가 아니다.
+        if "API" in (note or "") or "시간초과" in (note or "") or "지연" in (note or ""):
+            plan = code_plan(question)
+            if plan is not None:
+                trace.append(f"계획 호출 실패({note}) -> 코드가 계획 수립")
+        if plan is None:
+            return None, f"계획 실패: {note}"
     ok, why = validate(plan)
     trace.append(f"계획 {len(plan.get('steps', []))}단계 {'통과' if ok else '반려: ' + why}")
     if not ok:
@@ -668,12 +952,49 @@ def answer_with_plan(question):
         trace.append(f"{sid}: " + " / ".join(r["trace"]) + (f" / {r['note']}" if r.get("note") else ""))
     if not any(r.get("items") for r in results.values()):
         trace.append("수집 단계 전부 0건 -> 코드가 기권")
-        return {"answer": _abstain(question, plan, results), "retrieved_context": "",
+        cov_note, cov_ctx = _coverage_evidence(plan, question)
+        if cov_note:
+            trace.append("부재 근거로 수록 범위 첨부")
+        return {"answer": _abstain(question, plan, results, cov_note),
+                "retrieved_context": cov_ctx,
                 "think_trace": " -> ".join(trace)}, None
     text, context, snote = synthesize(question, plan, results)
     if text is None:
+        # API 실패(429·타임아웃)면 폴백으로 내려보내지 않는다. 그 경로는 호출을
+        # 두 번 더 쓰면서 이미 모은 근거를 버리고 다시 검색한다(실측 ev 1.00 -> 0.25).
+        # 계획이 나빠서가 아니라 쿼터가 말라서 죽은 것이므로 근거는 멀쩡하다.
+        if "API" in (snote or "") or "시간초과" in (snote or "") or "지연" in (snote or ""):
+            off = _compose_offline(question, plan, results, context, trace)
+            if off:
+                if FIX_ON:
+                    off = _postfix(off, context, results, trace, question)
+                return {"answer": off, "retrieved_context": context,
+                        "think_trace": " -> ".join(trace) + f" -> 합성 실패({snote})"}, None
         return None, " -> ".join(trace) + f" -> 합성 실패: {snote}"
 
+    if FIX_ON:
+        text = _postfix(text, context, results, trace, question)
+
+    trace.append(f"합성 완료{snote}")
+    return {"answer": text, "retrieved_context": context,
+            "think_trace": " -> ".join(trace)}, None
+
+
+# 금액을 물었을 때 답변이 빠뜨리면 코드가 되붙일 항목들. 근거 원문에 그 항목명과
+# 금액이 나란히 적혀 있을 때만 그 대목을 인용하므로, 목록에 없는 항목이나
+# 근거에 없는 금액에는 아무 일도 하지 않는다(지어내지 않는다).
+AMT_ITEMS = ("매출액", "영업이익", "당기순이익", "수주잔고", "자산총계", "부채총계",
+             "자본총계", "매출총이익", "영업수익", "계약금액", "투자금액", "발행금액",
+             "조달금액", "권면총액", "취득금액", "처분금액", "해지금액")
+# 매칭 예: '3조 1,200억원' / '5,400억원' / '2조원' (평가셋 값은 예시로 쓰지 않는다)
+KO_AMT = r"\d[\d,]*조(?:\s*[\d,]+억)?\s*원?|[\d,]{3,}\s*억\s*원"
+
+
+def _postfix(text, context, results, trace, question=""):
+    """합성 결과에서 코드가 아는 사실이 빠졌으면 채운다.
+
+    A/B 측정에서 이 함수 전체가 꺼진다(AGENT_FIX=off).
+    """
     # 범위 밖 안내는 코드가 직접 붙인다.
     # 합성 프롬프트에 "그 문구를 한 글자도 바꾸지 말고 적어라"를 명시했는데도
     # HCX가 "알 수 없습니다"로 바꿔 써서 채점 마커를 비껴갔다(3회 재현).
@@ -701,6 +1022,89 @@ def answer_with_plan(question):
     if miss:
         text = text.rstrip() + "\n\n※ 표의 합계(계) 금액: " + ", ".join(dict.fromkeys(miss)) + "."
         trace.append("확정치 합계를 코드가 보강")
+
+    # 질문이 물은 항목의 금액이 근거에 적혀 있는데 답변이 증감률만 쓰고 금액을 버린다.
+    # 실측(T6-O-005, 4회 글자까지 동일): 근거 문장에 매출액·영업이익 금액이 원문 그대로
+    # 들어 있는데(ev=1.00) 답변은 증감률 두 개만 쓰고 금액을 통째로 버렸다.
+    # SYNTH_SYSTEM 에 "증감률만 쓰지 말고 금액을 먼저 적어라"가 이미 들어 있는 상태에서
+    # 난 실패라 프롬프트로는 안 된다(오라클 O1 17 = O2 17, 지침 강화 효과 0과 같은 결론).
+    # 코드가 근거 문장에서 항목명에 붙은 금액 대목만 원문 그대로 인용해 붙인다.
+    # context 는 단계별 예산에 맞춰 잘린 발췌라 정작 그 금액이 잘려나갔을 수 있다.
+    # 근거 원문 전체를 붙여 둔다. 아래 두 보강(항목 금액·원 단위 되붙이기)이 같이 쓴다.
+    full = context + " ".join((it.get("text") or "")
+                              for r in results.values() for it in (r.get("items") or []))
+
+    asked = [w for w in AMT_ITEMS if w in (question or "")]
+    if asked:
+        picked, seen = [], set()
+        flat = re.sub(r"\s+", " ", full)
+        for it in asked:
+            # 앞 문맥은 어느 기수·기준의 값인지 밝히는 수식어만 붙인다.
+            # 아무 앞글자나 14자 붙이면 "7,000억원, 영업이익 2,277억원"처럼
+            # 앞 항목의 숫자 중간에서 잘린 인용이 나온다(단위검증에서 확인).
+            pat = re.compile(r"(?:20\d{2}년\s*)?(?:연결기준\s*|별도기준\s*|연간\s*|당기\s*|전기\s*)?"
+                             + re.escape(it) + r"[^가-힣]{0,12}?(" + KO_AMT + r")")
+            for m in pat.finditer(flat):
+                amt = m.group(1).strip()
+                key = amt.replace(" ", "").rstrip("원")
+                if not key or key in seen or key in text.replace(" ", ""):
+                    continue
+                seen.add(key)
+                picked.append(m.group(0).strip())
+                if len(picked) >= 4:
+                    break
+            if len(picked) >= 4:
+                break
+        if picked:
+            text = (text.rstrip() + "\n\n※ 근거 원문에 적힌 금액: "
+                    + " / ".join('"' + x + '"' for x in picked) + ".")
+            trace.append("항목 금액을 코드가 보강")
+
+    # 증감률도 같은 문제를 낸다 — 근거에 "전년 대비 19% 성장"이라고 적혀 있는데
+    # HCX가 두 해 금액으로 직접 나눠 "18.6% 증가"라고 고쳐 쓴다(T6-O-005 실측).
+    # 금액과 똑같은 '원문 그대로' 위반이고, 공시가 밝힌 값과 다른 값을 말하는 것이라
+    # 채점 이전에 사실관계가 틀린다. 근거가 명시한 비율은 코드가 원문 표기로 되붙인다.
+    if re.search(r"변화|달라|전년\s*대비|증가|감소|비교|성장", question or ""):
+        flat = re.sub(r"\s+", " ", full)
+        rates, rseen = [], set()
+        for m in re.finditer(r"전년\s*대비\s*(\d+(?:\.\d+)?)\s*%\s*(?:성장|증가|감소|하락|상승)?", flat):
+            val = m.group(1)
+            if val in rseen or (val + "%") in re.sub(r"\s+", "", text):
+                continue
+            rseen.add(val)
+            rates.append(m.group(0).strip())
+            if len(rates) >= 3:
+                break
+        if rates:
+            text = (text.rstrip() + "\n\n※ 근거 원문에 적힌 증감률: "
+                    + " / ".join('"' + x + '"' for x in rates) + ".")
+            trace.append("증감률을 코드가 보강")
+
+    # 정정 체인이 여러 단계면 중간 스냅샷이 옛 값을 더 많이 싣는다.
+    # 실측(T4-O-007, 5단 정정): 최종본의 140,000 은 근거에 3번뿐인데 중간 확정값
+    # 146,200 은 분기보고서를 타고 7번 실려서, HCX 가 빈도에 끌려 중간값을 답했다.
+    # CORRECTION_RULES 에 "'정 정 후' 값만 쓰라"를 넣어둔 상태에서 난 실패다.
+    # '확정'이라고 라벨이 붙은 값은 코드가 읽을 수 있으니 코드가 말한다.
+    # 정정 신고서 중 가장 나중 접수분만 본다 — 중간 정정본의 확정값을 집으면 같은 실수다.
+    if re.search(r"확정|최종", question or ""):
+        cor = [it for r in results.values() for it in (r.get("items") or [])
+               if "정정" in (it.get("report_nm") or "")]
+        if cor:
+            newest = max(str(it.get("rcept_dt") or "") for it in cor)
+            fixed = []
+            for it in cor:
+                if str(it.get("rcept_dt") or "") != newest:
+                    continue
+                fl = re.sub(r"\s+", " ", it.get("text") or "")
+                # '확정...(원) 숫자'. 정정 전 칸은 '-' 라서 숫자 조건에 안 걸린다.
+                for m in re.finditer(r"확정[가-힣]{0,8}\s*(?:보통주식\s*)?\(원\)\s*([\d,]{5,})", fl):
+                    v = m.group(1)
+                    if v not in fixed and v.replace(",", "") not in text.replace(",", ""):
+                        fixed.append(v)
+            if fixed:
+                text = (text.rstrip() + "\n\n※ 최종 정정본(" + newest
+                        + ")에 확정으로 기재된 값: " + ", ".join(f"{v}원" for v in fixed[:3]) + ".")
+                trace.append("최종 정정본 확정값을 코드가 보강")
 
     # 조 단위 금액에 한글 표기를 병기한다.
     # 공시 원문은 원 단위 숫자로만 적혀 있는데 채점은 같은 값의 한글 표기를
@@ -741,9 +1145,7 @@ def answer_with_plan(question):
     # 근거에 실재하는 숫자 중 답변의 한글 표기와 맞아떨어지는 것만 되붙인다.
     # 지어내지 않고 근거에 있는 값만 쓰므로 없던 오류를 만들지 않는다.
     # context 는 단계별 예산에 맞춰 잘린 발췌라 정작 그 숫자가 잘려나갔을 수 있다.
-    # 되붙일 값은 근거 원문 전체에서 찾는다.
-    full = context + " ".join((it.get("text") or "")
-                              for r in results.values() for it in (r.get("items") or []))
+    # 되붙일 값은 근거 원문 전체에서 찾는다(full 은 위에서 이미 만들어 뒀다).
     back = []
     for m in re.finditer(r"\d{1,3}(?:,\d{3}){4,}", full):
         raw = m.group(0)
@@ -757,6 +1159,5 @@ def answer_with_plan(question):
         text = text.rstrip() + "\n\n※ 근거 원문 금액: " + ", ".join(f"{b}원" for b in back) + "."
         trace.append("원 단위 금액을 코드가 보강")
 
-    trace.append(f"합성 완료{snote}")
-    return {"answer": text, "retrieved_context": context,
-            "think_trace": " -> ".join(trace)}, None
+    return text
+

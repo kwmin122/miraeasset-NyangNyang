@@ -365,7 +365,15 @@ def swap_superseded(hits, per_doc=2):
 
 
 def search(query, k=5):
-    """검색 진입점. PatchedSearcher가 있으면 그쪽으로 보낸다."""
+    """검색 진입점. PatchedSearcher가 있으면 그쪽으로 보낸다.
+
+    latest_only 를 여기서 만지려다 한 번 헛짚었다. PatchedSearcher 는 내부에서
+    이미 latest_only=False 로 넓게 뽑고 resolver.annotate 로 정정 구본을
+    top-k 창과 무관하게 제거한다. 그리고 _patched 는 항상 채워진다
+    (search_patch.py 는 agent/ 가 아니라 share_embeddings/ 에 있다).
+    그래서 이 함수에 latest_only 인자를 달아봐야 폴백 분기에서만 쓰이는
+    데드코드가 된다. 검색 폭을 넓히려면 PatchedSearcher 의 k/overfetch 를 봐라.
+    """
     if _patched is not None:
         return _patched.search(query, k=k)
     return s.search(query, k=k)

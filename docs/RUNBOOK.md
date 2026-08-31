@@ -91,6 +91,10 @@ docker system prune -f          # 미사용 이미지·빌드캐시만 정리 (�
 
 - [ ] 전 문항 최종 채점: 로컬 dev 30 + blind 6, NCP 외부 경유(`python3 evalset/run_eval.py --base http://⟨NCP-IP⟩:⟨포트⟩`) — 로컬과 통과율 동일 확인
 - [ ] `git tag freeze-0906 && git push origin freeze-0906` (이후 main 변경 금지)
+- [ ] **★ 에이전트 모드 확인 (제일 먼저)**: `curl -s ⟨공인IP⟩:⟨포트⟩/health` → `{"status":"ok","agent_mode":"sunwoo"}`
+      `mock`이면 더미 응답이라 **전 문항 0점**, `baseline`이면 선우 모듈이 안 도는 상태다.
+      `config.py` 기본값이 `mock`이고 배포는 손으로 쓴 `.env`를 읽으므로, 그 한 줄을 빠뜨리면 조용히 이렇게 된다.
+      (Dockerfile에 `ENV AGENT_MODE=sunwoo`를 박아 뒀지만 `--env-file`이 덮으므로 실물로 확인할 것)
 - [ ] NCP의 이미지가 freeze 커밋 기준 빌드인지 확인 (`docker inspect gongsi --format '{{.Config.Image}}'` + 빌드 시점 기록)
 - [ ] `--restart unless-stopped` 확인: `docker inspect gongsi --format '{{.HostConfig.RestartPolicy.Name}}'`
 - [ ] **재부팅 생존 실증**: NCP 콘솔 재부팅 → 자동 복구 → /ready 200 (1회 실연)
