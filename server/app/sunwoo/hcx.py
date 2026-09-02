@@ -10,19 +10,6 @@ import os
 ROOT = Path(__file__).resolve().parent
 
 
-def _find(cands):
-    """여러 후보 경로 중 실제로 있는 것을 고른다.
-
-    이 모듈은 두 트리에서 돌아야 한다. 개발용 폴더(미래에셋증권 대회/agent)와
-    팀 레포(miraeasset-NyangNyang/server/app)는 데이터 위치가 다르다.
-    한쪽에 맞추면 다른 쪽에서 import 단계에 죽는다.
-    """
-    for p in cands:
-        if p.exists():
-            return p
-    return None
-
-
 def _up(rels):
     """상위 폴더를 거슬러 올라가며 상대 경로를 찾는다.
 
@@ -113,6 +100,24 @@ RETRY_STATUS = (429, 500, 502, 503, 504)
 BACKOFF_429 = (3.0, 7.0, 12.0)
 BACKOFF_OTHER = (1.5, 3.0, 4.5)
 
+# 요청 하나의 전체 예산. WALL_LIMIT 은 '호출 하나'의 상한이라 한 문항이 계획·폴백·
+# 합성으로 여러 번 부르면 그 배수만큼 늘어난다. 실측(2026-08-31)에서 한 문항이
+# 1,056초(17.6분) 걸렸다 — 개별 호출은 다 60초 안이었는데 전체를 묶는 상한이 없었다.
+# 평가는 순차 호출이라 한 문항이 늘어지면 뒤가 전부 밀린다.
+REQUEST_LIMIT = float(os.environ.get("HCX_REQUEST_LIMIT", "90"))
+_req = threading.local()   # 서버가 요청을 스레드풀에서 돌리므로 스레드별로 둔다
+
+
+def start_request(limit=None):
+    """이 요청의 데드라인을 건다. 파이프라인 입구에서 한 번 부른다."""
+    _req.deadline = time.monotonic() + (REQUEST_LIMIT if limit is None else limit)
+
+
+def request_left():
+    """남은 요청 예산(초). 데드라인을 안 걸었으면 None."""
+    dl = getattr(_req, "deadline", None)
+    return None if dl is None else dl - time.monotonic()
+
 
 def _nap(sched, attempt):
     return sched[min(attempt, len(sched) - 1)]
@@ -158,6 +163,12 @@ def call_hcx(messages, max_tokens=1000, temperature=0, retries=3, wall=None):
     """
     last = ""
     budget = wall if wall is not None else WALL_LIMIT
+    # 요청 전체 예산이 걸려 있으면 그보다 길게 잡지 않는다.
+    _left = request_left()
+    if _left is not None:
+        if _left <= 1:
+            return None, "API 호출 실패(요청 예산 초과)"
+        budget = min(budget, _left)
     started = time.monotonic()
     for attempt in range(retries + 1):
         left = budget - (time.monotonic() - started)

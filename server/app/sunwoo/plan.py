@@ -222,7 +222,12 @@ def validate(plan):
                 return False, "trace에 date/year 없음"
     mode = ans.get("mode")
     if mode not in _MODES:
-        return False, f"answer.mode 불명 {mode}"
+        # 반려하지 않고 낮춘다. 아래 compare->list 강등과 같은 판단이다 —
+        # 계획 내용(단계·도구)은 멀쩡한데 답변 형식 라벨 하나가 틀렸을 뿐인데
+        # 반려하면 플래너 경로 전체가 버려진다.
+        # 실측(T4-O-008, 2026-09-02): 플래너가 mode="compute" 를 내서 통째로 반려됐고,
+        # 계획 자체는 collect + compute(sum) 으로 정확했는데 그게 통째로 날아갔다.
+        ans["mode"] = "list" if len(steps) > 1 else "single"
     a_in = ans.get("inputs") or [s["id"] for s in steps]
     if not all(i in ids for i in a_in):
         return False, "answer.inputs가 단계를 가리키지 않음"
@@ -987,7 +992,12 @@ AMT_ITEMS = ("매출액", "영업이익", "당기순이익", "수주잔고", "�
              "자본총계", "매출총이익", "영업수익", "계약금액", "투자금액", "발행금액",
              "조달금액", "권면총액", "취득금액", "처분금액", "해지금액")
 # 매칭 예: '3조 1,200억원' / '5,400억원' / '2조원' (평가셋 값은 예시로 쓰지 않는다)
-KO_AMT = r"\d[\d,]*조(?:\s*[\d,]+억)?\s*원?|[\d,]{3,}\s*억\s*원"
+# 한글 표기(조·억)뿐 아니라 원 단위 정수도 잡는다. 공시 원문은 보통
+# "계약금액(원) 105,400,000,000" 처럼 원 단위로 적고, 채점도 그 표기를 요구한다.
+# 억 표기만 잡던 탓에 실측(T4-O-011 어순변형)에서 같은 값의 "1,054억원"을 집어
+# 정답 문자열 105,400,000,000 을 못 붙였다.
+KO_AMT = (r"\d[\d,]*조(?:\s*[\d,]+억)?\s*원?|[\d,]{3,}\s*억\s*원"
+          r"|\d{1,3}(?:,\d{3}){2,}\s*원?")
 
 
 def _postfix(text, context, results, trace, question=""):
@@ -1043,7 +1053,15 @@ def _postfix(text, context, results, trace, question=""):
             # 아무 앞글자나 14자 붙이면 "7,000억원, 영업이익 2,277억원"처럼
             # 앞 항목의 숫자 중간에서 잘린 인용이 나온다(단위검증에서 확인).
             pat = re.compile(r"(?:20\d{2}년\s*)?(?:연결기준\s*|별도기준\s*|연간\s*|당기\s*|전기\s*)?"
-                             + re.escape(it) + r"[^가-힣]{0,12}?(" + KO_AMT + r")")
+                             # 항목명과 값 사이에 "(원)", "(백만원)" 같은 단위 표기가
+                             # 낀다. 한글을 막는 [^가-힣] 로는 그 괄호를 못 넘어서
+                             # "계약금액(원) 105,400,000,000" 이 통째로 안 잡혔다.
+                             + re.escape(it) + r"[^\n]{0,14}?(" + KO_AMT + r")")
+            # 항목마다 할당량을 따로 준다. 전체 상한만 두면 첫 항목이 예산을 독식한다.
+            # 실측(T6-O-005): KO_AMT 에 원 단위 정수를 더한 뒤 '매출액' 매칭이 폭증해
+            # 4칸을 전부 매출액이 가져갔고, 정작 물어본 '영업이익 1조 1,168억원'이
+            # 밀려나 2/4 로 미달했다. 질문이 여러 항목을 물으면 항목마다 나와야 한다.
+            take = 0
             for m in pat.finditer(flat):
                 amt = m.group(1).strip()
                 key = amt.replace(" ", "").rstrip("원")
@@ -1051,9 +1069,10 @@ def _postfix(text, context, results, trace, question=""):
                     continue
                 seen.add(key)
                 picked.append(m.group(0).strip())
-                if len(picked) >= 4:
+                take += 1
+                if take >= 2 or len(picked) >= 6:
                     break
-            if len(picked) >= 4:
+            if len(picked) >= 6:
                 break
         if picked:
             text = (text.rstrip() + "\n\n※ 근거 원문에 적힌 금액: "

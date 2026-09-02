@@ -1,21 +1,9 @@
-import os
 import re
 
-from extract import extract
+import hcx
 from plan import answer_with_plan, evidence_only_answer
-from slice1 import answer_type1
-from slice3 import answer_type3
-from slice4 import answer_type4
-from slice5 import answer_type5
-from slice6 import answer_type6
 from verify import check_dates
 from attribute import parse_ev, check_grounding, check_hedging, trace_note
-
-# 기본값을 on으로 둔다. off가 기본이면 서버를 띄울 때 플래그를 깜빡하는 순간
-# 조용히 예전 구조(34/38)로 돌아가고 에러도 안 난다 — 알아챌 방법이 없다.
-# 되돌릴 수단은 남긴다. 프리즈 후 사수 기간에는 코드 수정이 금지되므로
-# 문제가 생기면 AGENT_PLAN=off + 재기동이 유일하게 허용되는 조치다.
-PLAN_ON = os.environ.get("AGENT_PLAN", "on").lower() not in ("off", "0", "false")
 
 
 def unify_units(text, ctx):
@@ -39,11 +27,63 @@ def unify_units(text, ctx):
     return text
 
 
+# 컨텍스트 머리표를 되읽는 정규식. build_context 가 만든 형식과 짝이다.
+#   [근거 3/12 | 라벨] 사업보고서 (2025.12) (접수일 20260317) | 접수번호 20260317000644 | 한화오션
+_EV_HEAD = re.compile(
+    r"\[근거\s*(\d+)\s*/\s*\d+(?:\s*\|[^\]]*)?\]\s*(.+?)\s*\(접수일\s*(\d*)\)"
+    r"(?:\s*\|\s*접수번호\s*(\d+))?")
+# 답변이 쓰는 내부 인용: (근거 1, 3) / (근거 1/5) / [근거 3/27]
+_CITE_MARK = re.compile(r"[\(\[]\s*근거\s*([\d/,\s]+)[\)\]]")
+
+
+def attach_sources(text, context, limit=4):
+    """답변의 '(근거 N)' 내부 번호를 실제 출처로 옮겨 끝에 붙인다.
+
+    BASE_RULES 는 "보고서명(접수일, 접수번호)로 표기하라"고 하는데 CITE_RULES 의
+    "(근거 N)" 형식이 이겨서, 실측 58문 중 32문이 내부 번호만 달았다(근거표시 평균 0.36).
+    읽는 사람도 심사도 검증할 수 없는 출처다. 근거완전성은 정확성·요구충족과 함께 배점 축이다.
+
+    번호와 문서의 대응은 컨텍스트를 만든 코드가 알고 있으니 코드가 옮긴다.
+    답변이 번호를 안 달았으면 컨텍스트 앞쪽 근거를 순서대로 붙인다.
+    이미 접수번호를 쓴 답변은 건드리지 않는다.
+    """
+    if not text or not context:
+        return text
+    src = {}
+    for m in _EV_HEAD.finditer(context):
+        n, nm, dt, no = m.group(1), (m.group(2) or "").strip(), m.group(3) or "", m.group(4) or ""
+        if n not in src and (no or dt):
+            src[n] = (nm, dt, no)
+    if not src:
+        return text
+    if any(no and no in text for _, _, no in src.values()):
+        return text                       # 이미 접수번호를 밝힌 답변
+
+    used = []
+    for m in _CITE_MARK.finditer(text):
+        for tok in re.split(r"[,\s]+", m.group(1)):
+            n = tok.split("/")[0].strip()
+            if n and n in src and n not in used:
+                used.append(n)
+    if not used:                          # 번호를 안 달았으면 앞쪽부터
+        used = sorted(src, key=lambda x: int(x))[:limit]
+
+    out = []
+    for n in used[:limit]:
+        nm, dt, no = src[n]
+        d = f"{dt[:4]}-{dt[4:6]}-{dt[6:8]}" if len(dt) == 8 else dt
+        out.append(f"{nm} ({d}, 접수번호 {no})" if no else f"{nm} ({d})")
+    if not out:
+        return text
+    return text.rstrip() + "\n\n근거: " + " / ".join(out)
+
+
 def clean(r):
     """모든 유형이 이 출구를 거친다. 후처리와 검증을 여기 한 곳에만 둔다."""
     if r.get("answer"):
         r["answer"] = re.sub(r"\*+", "", r["answer"])
         r["answer"] = unify_units(r["answer"], r.get("retrieved_context", ""))
+        r["answer"] = attach_sources(r["answer"], r.get("retrieved_context", ""))
 
         bad = check_dates(r["answer"], r.get("retrieved_context", ""))
         if bad:
@@ -59,46 +99,6 @@ def clean(r):
             r["think_trace"] += (" -> [추측어투] "
                                  + " / ".join(f"'{h[:34]}'" for h in hedged[:3]))
     return r
-
-
-def normalize_slots(slots):
-    """extract가 준 슬롯의 타입을 여기서 한 번에 정리한다.
-
-    slice마다 방어를 흩뿌리면 구멍이 계속 생긴다. 실제로 slice6만 item=None에
-    무방비여서 크래시가 났다. 라우터 입구에서 한 번 정리하면 그런 편차가 사라진다.
-
-    반환 (qtype, corps, years, item)
-    """
-    try:
-        qtype = int(str(slots.get("qtype")).strip())
-    except (TypeError, ValueError):
-        qtype = None
-    if qtype not in (1, 2, 3, 4, 5, 6):
-        qtype = None
-
-    raw = slots.get("corps") or []
-    if isinstance(raw, str):
-        raw = [raw]
-    corps = [str(c).strip() for c in raw if c]
-
-    y = slots.get("year")
-    cand = y if isinstance(y, list) else [y]
-    years = []
-    for v in cand:
-        m = re.search(r"20\d{2}", str(v or ""))
-        if m:
-            years.append(int(m.group()))
-    years = sorted(set(years))
-
-    item = slots.get("item")
-    if isinstance(item, (list, tuple)):
-        # HCX가 항목을 리스트로 줄 때가 있다. str()로 감싸면 "['매출액', ...]"가 되어
-        # 검색어와 키워드 필터가 통째로 망가진다.
-        item = " ".join(str(x) for x in item if x)
-    elif not isinstance(item, str):
-        item = "" if item is None else str(item)
-
-    return qtype, corps, years, item
 
 
 # ── 공격·거짓전제 차단 (HCX 호출 전에 코드가 판정한다) ──────────────────────
@@ -159,6 +159,11 @@ def guard_reply(question):
 
 
 def _answer_question(question):
+    # 이 요청의 전체 예산을 건다. hcx.WALL_LIMIT 은 '호출 하나'의 상한이라
+    # 계획·폴백·합성으로 여러 번 부르면 그 배수만큼 늘어난다.
+    # 실측(2026-08-31)에서 한 문항이 1,056초 걸렸고, 평가는 순차라 뒤가 다 밀렸다.
+    hcx.start_request()
+
     hit = guard_reply(question)
     if hit:
         kind, reply = hit
@@ -177,87 +182,30 @@ def _answer_question(question):
         return {"answer": reply, "retrieved_context": "",
                 "think_trace": f"[가드] {kind} 판정 -> 코드가 거절 (HCX 호출 0회)"}
 
-    if PLAN_ON:
-        # 플래너 경로를 먼저 시도한다. 계획이 반려되거나 합성이 실패하면 None이
-        # 돌아오고 아래 기존 단일 경로로 떨어진다. 최악의 경우에도 기존 점수가 남는다.
-        r, why = answer_with_plan(question)
-        if r is not None:
-            r["think_trace"] = "[플래너] " + r["think_trace"]
-            return clean(r)
-        plan_note = f"[플래너 폴백] {why}"
-    else:
-        plan_note = None
+    r, why = answer_with_plan(question)
+    if r is not None:
+        r["think_trace"] = "[플래너] " + r["think_trace"]
+        return clean(r)
 
-    slots = extract(question)
-    if "error" in slots:
-        return {"answer": "질의를 해석하지 못했습니다. 기업명과 연도, 찾으시는 항목을 함께 적어 다시 물어봐 주세요.",
-                "retrieved_context": "",
-                "think_trace": f"슬롯 추출 실패: {str(slots.get('raw'))[:200]}"}
+    # 플래너 경로가 통째로 실패했을 때. 예전엔 여기서 슬롯 추출(HCX) + answer_typeN(HCX)
+    # 으로 호출을 두 번 더 쓰고 근거도 처음부터 다시 검색했다. 실측(최근 6회 348문)에서
+    # 그 경로는 2문(0.6%)만 돌았고 그 2문도 429 때문이었다 — 쿼터가 마른 상황에
+    # 호출을 늘리는 구조였다. 라우터 보정·승격·강등 규칙은 6회 내내 0회 발동.
+    #
+    # 대체 경로는 code_plan -> execute -> 근거 원문 인용이다. 생성 호출 0회로 끝나고
+    # 이미 모은 근거를 버리지 않는다.
+    try:
+        body, ctx, tr = evidence_only_answer(question)
+    except Exception:  # noqa: BLE001 - 폴백은 어떤 경우에도 답을 내야 한다
+        body, ctx, tr = None, "", ["근거 수집 실패"]
+    if body:
+        return clean({"answer": body, "retrieved_context": ctx,
+                      "think_trace": f"[플래너 실패: {why}] -> 코드 경로 / " + " / ".join(tr)})
 
-    qtype, corps, years, item = normalize_slots(slots)
-    trace = ([plan_note] if plan_note else []) + [f"슬롯: {slots}"]
-
-    corp = corps[0] if corps else None
-    year = years[-1] if years else None
-
-    if qtype == 3 and len(corps) < 2 and len(years) >= 2:
-        qtype = 6
-        trace.append("라우터 보정: 기업 1곳 + 연도 2개 -> 유형 6")
-    elif qtype == 3 and len(corps) < 2:
-        # slice3은 기업이 2곳이 아니면 근거 없이 "비교 대상 부족"만 돌려주고 끝난다.
-        # 그건 어떤 경우에도 정답이 아니라 단일 검색으로 되돌리는 편이 낫다.
-        qtype = 1
-        trace.append("라우터 보정: 비교 대상 1곳 -> 유형 1")
-    elif qtype == 6 and len(corps) >= 2:
-        qtype = 3
-        trace.append("라우터 보정: 기업 2곳 -> 유형 3")
-    elif qtype == 6 and len(corps) == 1 and re.search(
-            r"발행|증자|사채|계약 체결|공급계약|투자|취득|처분|해지", question or ""):
-        # 유형6은 정기보고서의 연도 대조를 전제한다. 사건성 수시공시(사채 발행·계약 등)를
-        # 두 시점 물으면 벡터 검색이 정기보고서 수천 청크에 묻힌다.
-        # 그런 질문은 manifest 직행으로 문서를 확정하는 유형4가 맞다.
-        qtype = 4
-        trace.append("라우터 보정: 단일 기업 + 수시공시 사건 -> 유형 4")
-    elif (qtype in (1, 2, 4) and corps
-          and re.search(r"이후 어떻게|이후에 어떻게|후속|결국|해지된|해지됐|취소된", question or "")
-          and re.search(r"20\d{2}[.\-년]", question or "")):
-        # "2023년 10월 6일 공시한 계약은 이후 어떻게 됐는가" 같은 후속 추적 질문.
-        # 단일 검색으로는 원공시만 찾고 그 뒤에 일어난 해지·정정을 못 본다.
-        # slice5가 해지 공시를 앵커로 잡고 원공시와 짝지어야 답이 나온다.
-        qtype = 5
-        trace.append("라우터 보정: 특정 공시의 후속 추적 -> 유형 5")
-    elif qtype == 5 and not re.search(
-            r"해지|해제|취소|종료|이후 어떻게|이후에 어떻게|후속|결국", question or ""):
-        # 위 규칙의 반대 방향이다. 승격 규칙만 있고 강등 규칙이 없어서,
-        # extract가 유형5로 잘못 보내면 slice5가 해지 공시를 앵커로 찾다가
-        # "해지 공시가 없습니다"라고 단언해 버린다. 질문은 해지를 묻지도 않았는데.
-        # 실측: 문장 끝을 "얼마인가?" -> "얼마인지 알려주실 수 있나요?"로 바꾸자
-        # extract가 유형5로 분류해 TR-NAME-001이 통째로 틀렸다.
-        # 판정 어휘는 위 승격 규칙과 같은 것을 쓴다. 새 어휘를 만들지 않는다.
-        qtype = 1
-        trace.append("라우터 보정: 후속·해지 어휘가 없음 -> 유형 1")
-    elif qtype in (1, 2) and re.search(r"\d+\s*건|여러 건|각 건", question or ""):
-        # "3건의 합계", "두 건을 비교" 처럼 건수를 명시한 질문은 단일 검색으로 풀 수 없다.
-        # extract가 이걸 유형1로 보내는 일이 실측으로 확인돼 코드가 되돌린다.
-        qtype = 4
-        trace.append("라우터 보정: 질문이 여러 건을 지목 -> 유형 4")
-    elif qtype is None:
-        qtype = 1
-        trace.append("유형 판별 실패 -> 유형 1로 처리")
-
-    if qtype in (1, 2):
-        r = answer_type1(question, corp=corp, year=year, item=item)
-    elif qtype == 3:
-        r = answer_type3(question, corps, year, item)
-    elif qtype == 4:
-        r = answer_type4(question, corp, years, item)
-    elif qtype == 5:
-        r = answer_type5(question, corp)
-    else:
-        r = answer_type6(question, corp, year, item)
-
-    r["think_trace"] = " -> ".join(trace) + " -> " + r.get("think_trace", "")
-    return clean(r)
+    return {"answer": "질문하신 내용은 제공된 공시에서 확인되지 않습니다. "
+                      "기업명과 연도, 찾으시는 항목을 함께 적어 다시 물어봐 주세요.",
+            "retrieved_context": "",
+            "think_trace": f"[플래너 실패: {why}] -> 코드 경로도 근거 0건"}
 
 
 def answer_question(question):

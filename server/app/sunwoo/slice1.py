@@ -29,11 +29,8 @@ if EMB_DIR is None:
         "(data/ 는 용량 때문에 git에서 제외돼 있어 clone 직후에는 없다. README 참조)")
 sys.path.append(str(EMB_DIR))
 from search_lib import Searcher
+from attribute import BASE_RULES, GUARD_RULES, SCOPE_RULES, CORRECTION_RULES
 
-from hcx import call_hcx, API_KEY, URL
-from attribute import (BASE_RULES, GUARD_RULES, SCOPE_RULES,
-                       CORRECTION_RULES,
-                       build_context)
 
 
 def year_of(h):
@@ -414,32 +411,3 @@ def retrieve(question, corp=None, year=None, item="", k=5):
         trace.append("재무제표 섹션 우선 정렬")
     return hits[:k], trace
 
-
-def answer_type1(question, corp=None, year=None, item="", k=5):
-    hits, trace = retrieve(question, corp, year, item, k)
-    if not hits:
-        parts = []
-        if corp:
-            parts.append(f"기업 '{corp}'")
-        if year:
-            parts.append(f"{year}년")
-        cond = ", ".join(parts) if parts else "해당 조건"
-        return {"answer": f"{cond} 조건에 맞는 공시를 찾지 못했습니다. 기업명과 연도를 확인해 주세요.",
-                "retrieved_context": "", "think_trace": " -> ".join(trace)}
-    context, _ev, _ = build_context(hits)
-    messages = [
-        {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": f"근거 자료:\n{context}질문: {question}"},
-    ]
-    text, note = call_hcx(messages, max_tokens=700)
-    if text is None:
-        return {"answer": None, "retrieved_context": context,
-                "think_trace": " -> ".join(trace) + f" -> {note}"}
-    trace.append("HCX 생성 완료")
-    return {"answer": text, "retrieved_context": context,
-            "think_trace": " -> ".join(trace) + note}
-
-if __name__ == "__main__":
-    r = answer_type1("삼성전자의 2025년 연결기준 매출액은 얼마인가?", corp="삼성전자", year=2025)
-    print("답변:", r["answer"])
-    print("추론 과정:", r["think_trace"])

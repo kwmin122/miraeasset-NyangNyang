@@ -1,9 +1,6 @@
 import re
 from slice1 import s, year_of, SLIM, with_text
 from slice3 import gather
-from hcx import call_hcx
-from attribute import (build_context, CITE_RULES, BALANCED_CONTRACT, CORRECTION_RULES,
-                       BASE_RULES, GUARD_RULES)
 
 ANNUAL_SECTIONS = ("주요 제품 및 서비스", "매출 및 수주")
 ANNUAL_HINT = ("매출 구성", "매출구성", "비중", "구성비", "품목별", "제품별")
@@ -182,10 +179,6 @@ def _section_rank(m):
             return rank
     return 9
 
-CAUSE_HINT = ("때문", "따라", "인해", "영향", "요인", "원인", "증가", "감소",
-              "확대", "축소", "하락", "상승", "대응", "기록", "성장")
-
-
 def gather_bg(corp, year, item, k=3):
     item = item or ""
     narrowed = [m for m in SLIM
@@ -202,48 +195,6 @@ def gather_bg(corp, year, item, k=3):
                             item not in m["text"],
                             -len(m["text"])))
     return out[:k]
-
-def bg_sufficient(bg_chunks):
-    """배경 근거에 원인·변화 서술이 실제로 있는지 코드가 판정한다.
-
-    기권 여부를 모델 판단에 맡기면 (A)환각과 (B)과잉기권 사이에서 진자가 왕복한다.
-    근거가 충분한지는 코드가 셀 수 있으므로 코드가 정하고, 모델에게는
-    그 결론에 맞는 지시만 준다. Sufficient Context(2025)의 선택적 생성 방식이다.
-    """
-    for m in bg_chunks:
-        t = m.get("text") or ""
-        if sum(h in t for h in CAUSE_HINT) >= 3:
-            return True
-    return False
-
-
-SYSTEM6 = (
-    "너는 DART 공시 기반 분석 비서다. 같은 기업의 서로 다른 연도 근거가 "
-    "수치 근거와 배경 근거로 나뉘어 번호와 함께 제공된다. "
-    "반드시 근거 내용만 사용하라. 답변 순서: 1) 연도별 해당 수치를 수치 근거에서 찾아 각각 명시, "
-    "2) 두 연도의 변화를 증가/감소와 폭으로 제시, 3) 배경 근거에 적힌 내용으로 변화의 원인을 설명."
-    + BASE_RULES + GUARD_RULES + CORRECTION_RULES + CITE_RULES + BALANCED_CONTRACT
-)
-
-SYSTEM6_NOBG = (
-    "너는 DART 공시 기반 분석 비서다. 같은 기업의 서로 다른 연도 근거가 번호와 함께 제공된다. "
-    "반드시 근거 내용만 사용하라. 답변 순서: 1) 연도별 해당 수치를 근거에서 찾아 각각 명시, "
-    "2) 두 연도의 변화를 증가/감소와 폭으로 제시. "
-    "변화의 배경·원인은 제공된 근거에 서술되어 있지 않으므로 추정해서 쓰지 말고, "
-    "'변화의 배경은 제공된 공시 근거에서 확인되지 않습니다'라고 한 줄로 밝힌 뒤, "
-    "어떤 자료를 확인하면 좋을지 한 문장으로 되물어라."
-    + BASE_RULES + GUARD_RULES + CITE_RULES
-)
-
-
-def pick_years(question, year):
-    ys = sorted({int(y) for y in re.findall(r"20\d{2}", question)})
-    if len(ys) >= 2:
-        return ys[-2], ys[-1]
-    base = ys[0] if ys else year
-    if not base:
-        return None, None
-    return base - 1, base
 
 def gather_year(corp, y, question, item):
     """한 연도의 수치 근거와 배경 근거. answer_type6과 플래너의 yeartab 도구가 같이 쓴다.
@@ -265,67 +216,3 @@ def gather_year(corp, y, question, item):
     trace.append(f"{y}년 수치 {len(hits)}건 / 배경 {len(bg)}건")
     return hits, bg, trace
 
-
-def answer_type6(question, corp, year, item):
-    trace = []
-    item = item or ""
-    if not corp:
-        return {"answer": "대상 기업을 파악하지 못했습니다. 기업명을 확인해 주세요.",
-                "retrieved_context": "", "think_trace": "기업 미확인"}
-
-    y1, y2 = pick_years(question, year)
-    if not y1:
-        return {"answer": "비교할 연도를 파악하지 못했습니다. 연도를 명시해 주세요.",
-                "retrieved_context": "", "think_trace": "연도 미확인"}
-    trace.append(f"비교 연도 {y1} vs {y2}")
-
-    groups = []
-    found, bg_all = [], []
-    for y in (y1, y2):
-        hits, bg, tr = gather_year(corp, y, question, item)
-        trace.extend(tr)
-        if hits:
-            found.append(y)
-            groups.append((f"{y}년 수치", hits, 800))
-        if bg:
-            bg_all += bg
-            groups.append((f"{y}년 배경", bg, 900))
-
-    if len(found) < 2:
-        missing = ", ".join(str(y) for y in (y1, y2) if y not in found)
-        return {"answer": f"{corp}의 {missing}년 자료가 확인되지 않아 두 연도를 비교할 수 없습니다. "
-                          f"확인하려는 보고서 종류나 항목을 알려주시면 다시 찾아보겠습니다.",
-                "retrieved_context": "", "think_trace": " -> ".join(trace)}
-
-    total = sum(len(items) for _, items, _ in groups)
-    context, ev, nxt = "", {}, 1
-    for label, items, cut in groups:
-        c, e, nxt = build_context(items, start=nxt, label=label, max_chars=cut, total=total)
-        context += c
-        ev.update(e)
-
-    enough = bg_sufficient(bg_all)
-    trace.append("배경 근거 충분" if enough else "배경 근거 불충분 -> 배경 서술 요구 안 함")
-    system = SYSTEM6 if enough else SYSTEM6_NOBG
-
-    ask = (f"근거 자료 (총 {total}건):\n{context}질문: {question}\n"
-           f"{y1}년과 {y2}년 각각의 수치를 반드시 모두 제시한 뒤 비교하라.")
-    # gather_annual 이 뽑은 확정치 블록이 실제로 근거에 들어갔을 때만 금액을 요구한다.
-    # gather_year 를 함수로 빼내는 리팩터링 때 이 변수 정의가 같이 사라져
-    # 폴백 경로(플래너 미사용·플래너 실패)가 NameError 로 통째로 죽어 있었다.
-    used_annual = "[코드추출·확정치]" in context
-    if used_annual:
-        # 비중만 답하고 금액을 빠뜨리는 일이 실측으로 반복됐다. 채점은 원문 수치
-        # 문자열 일치라 금액이 빠지면 비중을 맞혀도 미달이 난다.
-        ask += (f" 비중(%)만 쓰지 말고 각 항목의 금액과 연도별 총액(합계·계 행)을"
-                f" 원문 숫자 그대로 함께 적어라. {y1}년 총액과 {y2}년 총액을 둘 다 밝혀라.")
-    messages = [{"role": "system", "content": system},
-                {"role": "user", "content": ask}]
-    text, note = call_hcx(messages, max_tokens=1400)
-    if text is None:
-        return {"answer": None, "retrieved_context": context,
-                "think_trace": " -> ".join(trace) + f" -> {note}"}
-
-    trace.append("HCX 연도 대조·서술 완료")
-    return {"answer": text, "retrieved_context": context,
-            "think_trace": " -> ".join(trace) + note}

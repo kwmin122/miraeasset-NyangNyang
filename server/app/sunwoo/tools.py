@@ -362,21 +362,6 @@ def yeartab(corp, year, topic="", question=""):
     return hits + bg, tr
 
 
-_NUM = re.compile(r"\(?-?[\d,]+\.?\d*\)?")
-
-
-def _nums_in(text):
-    out = []
-    for m in _NUM.finditer(text or ""):
-        t = m.group().strip("()")
-        try:
-            v = float(t.replace(",", ""))
-            if m.group().startswith("("):
-                v = -v
-            out.append(v)
-        except ValueError:
-            pass
-    return out
 
 
 def compute(op, values):

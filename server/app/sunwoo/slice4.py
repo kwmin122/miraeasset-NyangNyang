@@ -1,8 +1,5 @@
 import json, re
-from pathlib import Path
-from slice1 import s, ROOT, API_KEY, URL, find_path, RCEPT_IDX
-from hcx import call_hcx
-from attribute import BASE_RULES, GUARD_RULES, build_context
+from slice1 import s, find_path, RCEPT_IDX
 
 MANIFEST_PATH = find_path([
     "3.공시/3.공시/corpus/manifest.jsonl",
@@ -30,10 +27,6 @@ ITEM_ALIAS = {
 }
 
 
-AGG_WORDS = ("합계", "총액", "총 ", "합쳐", "합하", "모두 얼마", "차이", "차액",
-             "비교", "계산", "몇 배", "증감", "대비")
-
-
 def asked_months(question, years):
     """질문에 적힌 '{연도}년 {n}월'에서 연월을 뽑는다.
 
@@ -51,16 +44,6 @@ def asked_months(question, years):
 def question_terms(question):
     """질문에 나온 영문 대문자 약어를 뽑는다. VLGC·VLAC·ROA 같은 것들이다."""
     return [t for t in re.findall(r"\b[A-Z][A-Z0-9]{2,}\b", question or "")]
-
-
-def wants_aggregate(question):
-    """질문이 합계·차이 같은 집계를 요구하는지 본다.
-
-    건별 나열만 시키면 "3건의 합계는?"에 답을 못 하고,
-    항상 합산을 허용하면 서로 무관한 건을 더해 엉뚱한 수를 낸다.
-    질문 문구로 갈라야 둘 다 잡힌다.
-    """
-    return any(w in (question or "") for w in AGG_WORDS)
 
 
 def pick_keywords(item, cands):
@@ -147,115 +130,3 @@ def resolve_latest(cands):
         out.append((latest, orig))
     return out
 
-
-SYSTEM4 = (
-    "너는 DART 공시 기반 분석 비서다. 여러 건의 공시 근거가 제공된다. "
-    "반드시 근거 내용만 사용해 항목을 유형별로 분류·정리하라. 각 항목에 공시 날짜를 붙여라. "
-    "정정 신고서에는 '정 정 전'과 '정 정 후' 값이 나란히 표기된다. "
-    "반드시 '정 정 후' 값만 사용하라. '정 정 전' 값은 이미 폐기된 값이므로 절대 인용하지 마라."
-    + BASE_RULES + GUARD_RULES
-)
-
-def answer_type4(question, corp, year, item):
-    trace = []
-    cands = [d for d in docs if d["corp_name"] == corp]
-    trace.append(f"기업 필터 후 {len(cands)}건")
-
-    years = year if isinstance(year, (list, tuple)) else ([year] if year else [])
-    years = [str(y) for y in years if y]
-    if years:
-        cands = [d for d in cands if d["rcept_dt"][:4] in years]
-        trace.append(f"연도 필터(rcept_dt {'/'.join(years)}) 후 {len(cands)}건")
-
-    kws = pick_keywords(item, cands)
-
-    if kws:
-        cands = [d for d in cands if any(k in d["report_nm"] for k in kws)]
-        trace.append(f"키워드 필터({'/'.join(kws[:3])}) 후 {len(cands)}건")
-
-    pairs = []
-    if cands:
-        cands = group_chains(cands)
-        pairs = resolve_latest(cands)
-        n_fixed = sum(1 for latest, orig in pairs if latest["rcept_no"] != orig["rcept_no"])
-        trace.append(f"정정 체인 그룹핑 후 {len(pairs)}건"
-                     + (f" (연도 밖 정정본으로 {n_fixed}건 교체)" if n_fixed else ""))
-
-        months = asked_months(question, years)
-        if months:
-            # 월이 명시된 연도만 그 달로 좁힌다. 질문이 "2023년 초"처럼 월을 안 밝힌
-            # 연도까지 같이 잘라내면 그쪽 근거가 통째로 사라진다.
-            ym_years = {m[:4] for m in months}
-            narrowed = [(d, o) for d, o in pairs
-                        if o["rcept_dt"][:4] not in ym_years or o["rcept_dt"][:6] in months]
-            if narrowed:
-                pairs = narrowed
-                trace.append(f"질문에 적힌 월({'/'.join(months)})로 좁혀 {len(pairs)}건")
-
-        terms = question_terms(question)
-        if terms and len(pairs) > 1:
-            def has_term(d):
-                idxs = rcept_index.get(d["rcept_no"], [])
-                return bool(idxs) and any(t in s.meta[idxs[0]]["text"] for t in terms)
-            narrowed = [(d, o) for d, o in pairs if has_term(d)]
-            if narrowed and len(narrowed) < len(pairs):
-                pairs = narrowed
-                trace.append(f"질문 용어({'/'.join(terms[:3])})로 좁혀 {len(pairs)}건")
-
-    if not pairs:
-        cond = f"기업 '{corp}'" + (f", {'·'.join(years)}년" if years else "")
-        return {"answer": f"{cond} 조건에 해당하는 공시를 찾지 못했습니다. 기업명과 연도를 확인해 주세요.",
-                "retrieved_context": "", "think_trace": " -> ".join(trace)}
-
-    # 공시 건수가 적으면 건당 본문을 넉넉히, 많으면 짧게. 총 투입량을 일정하게 유지한다.
-    # 첫 청크 800자만 넣으면 자금조달 목적 내역·이자율처럼 표 뒤쪽에 오는 수치가 잘린다.
-    n_docs = min(len(pairs), 12)
-    budget = max(800, min(4000, 14000 // max(n_docs, 1)))
-
-    items = []
-    for d, orig in pairs[:12]:
-        idxs = rcept_index.get(d["rcept_no"], [])
-        if not idxs:
-            continue
-        body = ""
-        for i in idxs:
-            if len(body) >= budget:
-                break
-            body += s.meta[i]["text"]
-        fixed = d["rcept_no"] != orig["rcept_no"]
-        items.append({"text": body, "report_nm": d["report_nm"],
-                      "rcept_dt": orig["rcept_dt"], "rcept_no": d["rcept_no"],
-                      "corp_name": d.get("corp_name"),
-                      "section_path": (f"이 건은 {orig['rcept_dt']}에 공시된 사건이다. "
-                                       f"본문은 {d['rcept_dt']}에 접수된 최신 정정본이다"
-                                       if fixed else None)})
-    n = len(items)
-    context, _ev, _ = build_context(items, max_chars=budget)
-
-    base = (f"근거 자료 (총 {n}건):\n{context}질문: {question}\n"
-            f"근거 {n}건은 각각 별개의 건이다. 근거 1번부터 {n}번까지 순서대로, "
-            f"건마다 항목을 나누어 정리하라. 한 건도 합치거나 빠뜨리지 마라. "
-            f"각 건의 금액은 그 근거 안의 '정 정 후' 값을 쓰고, "
-            f"각 건은 '근거 1번' 같은 내부 번호가 아니라 공시 접수일로 구분해 제목을 달아라. "
-            f"금액은 원문에 적힌 자릿수를 그대로 옮겨라. 백만원 단위로 줄여 쓰지 마라. "
-            f"각 건에 딸린 세부 항목(자금 용도별 금액, 이자율, 수량, 계약상대, 계약기간)이 "
-            f"근거에 있으면 빠짐없이 함께 적어라.")
-    if wants_aggregate(question):
-        ask = (base + " 건별 정리를 마친 뒤, 질문이 요구한 합계 또는 차이를 마지막에 제시하라. "
-                      # 예시는 평가셋에 없는 값으로 둔다 (원래 T4-O-004 골드였다)
-                      "계산은 '1,000,000,000 + 2,500,000,000 = 3,500,000,000'처럼 "
-                      "식을 그대로 적어 보여라. 원문에 없는 값을 계산에 넣지 마라.")
-    else:
-        ask = base + " 여러 건의 금액을 임의로 합산하지 마라."
-    messages = [{"role": "system", "content": SYSTEM4},
-                {"role": "user", "content": ask}]
-
-    text, note = call_hcx(messages, max_tokens=1400)
-    if text is None:
-        return {"answer": None, "retrieved_context": context,
-                "think_trace": " -> ".join(trace) + f" -> {note}"}
-
-    trace.append(f"HCX 분류·정리 완료 (근거 {n}건 투입)")
-
-    return {"answer": text, "retrieved_context": context,
-            "think_trace": " -> ".join(trace) + note}
