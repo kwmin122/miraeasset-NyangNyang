@@ -3,7 +3,11 @@ FROM python:3.11-slim
 WORKDIR /srv
 
 COPY server/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# torch 를 CPU 전용 인덱스에서 먼저 설치한다. 기본 PyPI 의 torch 는 x86_64 리눅스에서
+# CUDA 런타임을 끌고 와 이미지가 8.65GB 로 불어나고 빌드가 57분 걸린다(S3 실측).
+# 먼저 깔아두면 requirements 의 torch>=2.3 은 이미 충족되어 재설치되지 않는다.
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch \
+ && pip install --no-cache-dir -r requirements.txt
 
 COPY server/app ./app
 # S6 2순위 산출물(FAISS SQ8 재양자화본, ~0.53GB) — data/ 산출물이 아닌 우리 산출물이라 이미지에 포함.
