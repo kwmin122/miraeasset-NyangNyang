@@ -2,14 +2,14 @@
 
 > **원칙: 프리즈(9/6) 후엔 고치지 않는다 — 재기동만 한다.**
 > 새벽 2시에 잠 덜 깬 상태로 위에서 아래로 따라 하면 되도록 명령어 원문을 그대로 적는다.
-> `⟨NCP-IP⟩` 등 ⟨꺾쇠⟩ 자리는 S7 배포 완료 시 실값으로 치환한다 (치환 전에는 이 문서는 골격 상태).
+> S7 배포 완료(2026-09-02)로 모든 자리표시자를 실값으로 치환했다. SSH 키는 `~/.ssh/nyangnyangkey.pem`(민경욱 로컬 전용, 재발급 불가 — git·카톡 금지).
 >
 > *2026-08-08 Fable 초안 (S8 문서분 선작성 — NCP 불필요분). 리허설·실측 수치는 S8 본작업에서 채움.*
 
 ## 0. 시스템 한눈에
 
 - **무엇**: `GET /answer?question=...&question_id=...` → 항상 200 + 5필드 JSON (question_id, question, retrieved_context, think_trace, answer)
-- **어디**: NCP 서버 `⟨NCP-IP⟩` (2vCPU/4GB, x86_64), HTTP 포트 `⟨포트: 주최측 공지, 미공지 시 80⟩`
+- **어디**: NCP 서버 `49.50.143.160` (2vCPU/4GB, x86_64), HTTP 포트 `80 (주최측 미공지 → 80 사용)`
 - **구성**: Docker 컨테이너 1개 (`--restart unless-stopped`), 내부는 FastAPI + FAISS(SQ8) + bf16 임베딩 + HCX-005
 - **강등 사다리**: HCX 성공(`[HCX 사용]`) → HCX 실패 시 추출형 폴백(`[폴백 사용]`) → 에이전트 예외 시 main.py 최후방어(LIMIT_ANSWER) — **어떤 경우에도 200 + 5필드는 유지된다. 5xx가 보이면 그건 컨테이너가 죽은 것.**
 - **로그**: 컨테이너 내부 `logs/requests.jsonl`(요청·응답 전문), `logs/hcx_usage.jsonl`(HCX 호출 결과·토큰)
@@ -18,15 +18,15 @@
 
 ```bash
 # ① 살아 있나 (밖에서 — 평가자와 같은 경로)
-curl -s http://⟨NCP-IP⟩:⟨포트⟩/ready
+curl -s http://49.50.143.160/ready
 # 기대: {"status":"ready"}  — 이거 아니면 §3-A로
 
 # ② 실질 응답 1발 (밖에서)
-curl -s "http://⟨NCP-IP⟩:⟨포트⟩/answer?question=삼성전자+최근+공시+알려줘&question_id=daily-check" | head -c 300
+curl -s "http://49.50.143.160/answer?question=삼성전자+최근+공시+알려줘&question_id=daily-check" | head -c 300
 # 기대: 5필드 JSON. answer가 비어있지 않을 것
 
 # ③ 서버 들어가서 (SSH — 본인 IP에서만 접속됨)
-ssh ⟨계정⟩@⟨NCP-IP⟩
+ssh -i ~/.ssh/nyangnyangkey.pem root@49.50.143.160
 docker ps                                   # STATUS가 Up이고 최근 재시작 흔적 확인 (Restarting 반복이면 §3-A)
 docker inspect gongsi --format '{{.State.OOMKilled}} {{.RestartCount}}'   # false + 재시작 횟수 추이
 df -h /                                     # 디스크 여유 (로그 누적 — 80% 넘으면 §3-D)
@@ -45,17 +45,21 @@ docker exec gongsi tail -5 logs/hcx_usage.jsonl  # success:false 연속이면 §
 ```bash
 # 재기동 (프리즈 후 유일하게 허용되는 조치)
 docker restart gongsi
-# 워밍업 대기 (imbedding 로딩 — 로컬 실측 ~7s, NCP 실측치로 갱신: ⟨S7 실측⟩)
-sleep 15 && curl -s http://localhost:⟨포트⟩/ready
+# 워밍업 대기 (임베딩 모델 로딩 — NCP 실측 48s. 60s 는 기다려라)
+sleep 60 && curl -s http://localhost/ready
 
 # 컨테이너가 아예 없을 때 (서버 재부팅 직후 --restart가 못 살린 경우)
 docker run -d --name gongsi --restart unless-stopped \
-  --cpus=2 --memory=4g --memory-swap=4g \
-  -p ⟨포트⟩:8000 \
-  --env-file /home/⟨계정⟩/.env \
-  -v /home/⟨계정⟩/data:/app/data:ro \
-  gongsi-agent:freeze-0906
-# ⟨S7에서 실제 run 명령 확정 후 이 블록을 실값으로 교체할 것⟩
+  --cpus=2 --memory=3400m \
+  -p 80:8000 \
+  --env-file /srv/.env \
+  -v /srv/data/share_embeddings:/srv/data/share_embeddings:ro \
+  -v /srv/data/corpus:/srv/data/corpus:ro \
+  -v /srv/hf_cache:/root/.cache/huggingface \
+  -v /srv/logs:/srv/logs \
+  gongsi-agent:s7
+# --memory=3400m 은 호스트(3914MB)보다 낮게 잡은 것이다. 컨테이너가 터질 때
+# 커널이 sshd 를 죽여 서버를 통째로 잃는 사고를 막는다. 스왑 2GB 가 로딩 스파이크를 받는다.
 
 # 절대 하지 말 것: docker build, git pull, 코드 수정, .env 수정(키 재발급 등 비상시 제외)
 ```
@@ -63,7 +67,7 @@ docker run -d --name gongsi --restart unless-stopped \
 ## 3. 장애 시나리오별 대응
 
 ### A. `/ready`가 503이거나 접속 불가
-1. `ssh ⟨계정⟩@⟨NCP-IP⟩` → `docker ps -a`
+1. `ssh -i ~/.ssh/nyangnyangkey.pem root@49.50.143.160` → `docker ps -a`
 2. 컨테이너 Up인데 503 → 워밍업 중일 수 있음. 2분 기다렸다 재확인. 계속 503이면 `docker logs --tail 50 gongsi`에서 `warmup_error` 확인 → `docker restart gongsi`
 3. 컨테이너 Exited/Restarting → `docker inspect gongsi --format '{{.State.OOMKilled}}'`
    - `true`(OOM): `docker restart gongsi` 후 관찰. 반복되면 runbook "알려진 제약"에 기록하고 재기동 루프로 버틴다 (프리즈 후 코드 수정 금지)
@@ -89,9 +93,9 @@ docker system prune -f          # 미사용 이미지·빌드캐시만 정리 (�
 
 ## 4. 9/6 프리즈 체크리스트
 
-- [ ] 전 문항 최종 채점: 로컬 dev 30 + blind 6, NCP 외부 경유(`python3 evalset/run_eval.py --base http://⟨NCP-IP⟩:⟨포트⟩`) — 로컬과 통과율 동일 확인
+- [ ] 전 문항 최종 채점: 로컬 dev 30 + blind 6, NCP 외부 경유(`python3 evalset/run_eval.py --base http://49.50.143.160`) — 로컬과 통과율 동일 확인
 - [ ] `git tag freeze-0906 && git push origin freeze-0906` (이후 main 변경 금지)
-- [ ] **★ 에이전트 모드 확인 (제일 먼저)**: `curl -s ⟨공인IP⟩:⟨포트⟩/health` → `{"status":"ok","agent_mode":"sunwoo"}`
+- [ ] **★ 에이전트 모드 확인 (제일 먼저)**: `curl -s 49.50.143.160/health` → `{"status":"ok","agent_mode":"sunwoo"}`
       `mock`이면 더미 응답이라 **전 문항 0점**, `baseline`이면 선우 모듈이 안 도는 상태다.
       `config.py` 기본값이 `mock`이고 배포는 손으로 쓴 `.env`를 읽으므로, 그 한 줄을 빠뜨리면 조용히 이렇게 된다.
       (Dockerfile에 `ENV AGENT_MODE=sunwoo`를 박아 뒀지만 `--env-file`이 덮으므로 실물로 확인할 것)
@@ -105,7 +109,7 @@ docker system prune -f          # 미사용 이미지·빌드캐시만 정리 (�
 
 ## 5. 9/30 철수 체크리스트 (크레딧 소진 전 — 순서 중요)
 
-- [ ] 최종 로그 회수: `scp ⟨계정⟩@⟨NCP-IP⟩:~/logs-final.tar.gz .` (`docker exec gongsi tar czf - logs > logs-final.tar.gz`)
+- [ ] 최종 로그 회수: `scp -i ~/.ssh/nyangnyangkey.pem root@49.50.143.160:~/logs-final.tar.gz .` (`docker exec gongsi tar czf - logs > logs-final.tar.gz`)
 - [ ] (원하면) 서버 스냅샷/이미지 백업 — 과금 확인 후 결정, 불필요하면 생략
 - [ ] 서버 인스턴스 **반납/삭제** (정지 아님 — 정지는 과금 지속될 수 있음)
 - [ ] 블록 스토리지·스냅샷·공인 IP 등 부속 리소스 삭제 (공인 IP는 서버 삭제 후에도 별도 과금)

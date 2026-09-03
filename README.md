@@ -2,6 +2,62 @@
 
 평가 API 서버 + 평가 질의셋. 담당: 민경욱.
 
+## 평가용 API End-point (주최측 제출)
+
+```
+GET http://49.50.143.160/answer
+```
+
+| 항목 | 값 |
+|---|---|
+| End-point | `http://49.50.143.160/answer` |
+| 프로토콜 / 포트 | HTTP / 80 (표준 포트 — 주소에 포트 표기 불필요) |
+| 메서드 | GET |
+| 쿼리 파라미터 | `question_id` (질의 ID), `question` (평가 질의 원문) |
+| 응답 | `application/json`, 5필드 **전부 문자열** |
+| 인증 헤더 | 없음 (주최측 안내대로 미사용) |
+
+**호출 예시**
+
+```bash
+curl -G "http://49.50.143.160/answer" \
+  --data-urlencode "question_id=Q-001" \
+  --data-urlencode "question=SK하이닉스의 신규시설투자 금액은?"
+```
+
+```python
+import requests
+r = requests.get("http://49.50.143.160/answer",
+                 params={"question_id": "Q-001", "question": "평가 질의"}, timeout=300)
+print(r.json())   # question_id, question, retrieved_context, think_trace, answer
+```
+
+**응답 형태**
+
+```json
+{
+  "question_id": "Q-001",
+  "question": "평가 질의 원문",
+  "retrieved_context": "[근거 1] 보고서명 (접수일) | 기업명 | 접수번호 | 섹션\n본문...\n\n[근거 2] ...",
+  "think_trace": "[플래너] 계획 1단계 통과 -> ... -> 합성 완료",
+  "answer": "최종 생성 답변"
+}
+```
+
+- `retrieved_context`는 여러 근거를 `[근거 n] 머리말 + 본문` 형식으로 이어붙인 **하나의 문자열**이다 (배열 아님).
+- 질의가 코퍼스 범위(2023-01~2026-03) 밖이거나 해당 공시가 없어도 **200 + 5필드**를 반환한다 (거절 사유를 `answer`에 담는다).
+- 상태 확인용 보조 엔드포인트: `GET /health` (에이전트 모드 확인), `GET /ready` (워밍업 완료 여부).
+
+**S7 배포 실측 (2026-09-02, NCP c2-g3a 2vCPU/4GB x86_64)**
+
+| 항목 | 실측 |
+|---|---|
+| dev 58문 정답률 (외부 경유 채점) | **58/58 (100%)** — 로컬과 동일 |
+| 최대 응답 지연 | 35.1s (주최측 타임아웃 300s 대비 여유) |
+| 콜드 스타트 워밍업 | 48s |
+| 재부팅 자동 복구 | `/health` 36s, `/ready` 87s (`--restart unless-stopped` + `@reboot` 자동 예열) |
+| 컨테이너 메모리 | 2.98GB / 3.32GB (OOM 없음, 스왑 2GB 대기) |
+
 ## 팀원용 — 지금 상태와 각자 할 일
 
 **현재 상태판은 [`docs/CONTEXT.md`](docs/CONTEXT.md) 하나만 보면 된다** (뭐가 동작하고, 뭐가 문제고, 왜 그렇게 결정했는지). 요약:
@@ -96,10 +152,41 @@ python3 evalset/run_eval.py            # questions_v1.jsonl 전체 채점
 - blind 14문은 git·이 파일 목록에 없음 (선우 튜닝 비노출 — 과적합 방지 홀드아웃)
 - 유형별 정답률·근거 recall·지연시간 요약 출력, 상세는 `results_*.jsonl`
 
-## 배포 (NCP, 8월 말 예정)
+## 배포 (NCP)
 
 2vCPU/4GB (주최측 권장 스펙), Docker + 볼륨 마운트, HTTP 우선 (HTTPS는 주최측 재공지 대기).
-자세한 계획: `docs/PLAN.md`, 경계 계약: `docs/SPEC.md`.
+자세한 계획: `docs/PLAN.md`, 경계 계약: `docs/SPEC.md`. 사수 기간 매뉴얼: `docs/RUNBOOK.md`.
 작업 방식(Fable=계획·검증/Sonnet=구현): `docs/WORKFLOW.md`, 작업 큐: `docs/SLICES.md`, 일지: `docs/LOG.md`.
+
+### 서버에는 `data/`를 통째로 올리지 않는다 (S7에서 확정)
+
+로컬 `data/`는 8.1GB지만 **서버에 필요한 건 3.2GB뿐**이다. 서버 디스크가 30GB라
+`docker build` 중에 꽉 차는 게 실제 위험이었고, 나머지는 실행 중에 아무도 읽지 않는다.
+
+| 파일 | 로컬 | 서버 | 왜 |
+|---|---|---|---|
+| `data/corpus/**.xml` (공시 원문) | 5.2GB | **안 올림** | 실행 중 XML을 여는 코드가 한 줄도 없다. 공시 본문은 이미 `chunk_meta.jsonl` 안에 들어 있다 |
+| `data/corpus/manifest.jsonl` | 2.4MB | 올림 | `server/app/sunwoo/slice4.py`가 공시 목록을 여기서 읽는다 |
+| `data/share_embeddings/out/chunk_meta.jsonl` | 1.04GB | 올림 | 검색 결과의 본문. `search_patch.py`의 `Resolver`가 통째로 훑는다 |
+| `data/share_embeddings/out/correction_map.json` | 0.7MB | 올림 | 정정공시 계보 판정 |
+| `data/share_embeddings/out/index.faiss` | 2.1GB | **안 올림** | `server/artifacts/index_sq8.faiss`(0.53GB, 같은 인덱스의 압축본)로 대체된다 |
+| `data/share_embeddings/search_lib.py`, `search_patch.py` | 8KB | 올림 | 검색 라이브러리 본체 |
+| HF 모델 캐시 `models--nvidia--Nemotron-3-Embed-1B-BF16` | 2.1GB | 올림 | 질문을 벡터로 바꾸는 임베딩 모델. 미리 올려두고 `HF_HUB_OFFLINE=1`로 고정 — 심사 중 다운로드 실패 여지를 없앤다 |
+
+**주의 — 서버에서 공시 XML이 안 보인다고 "빠졌네" 하고 채워 넣지 말 것.** 의도적으로 뺀 것이다.
+`index.faiss`도 마찬가지다. 되돌리려면 `server/artifacts/index_sq8.faiss`를 지워야
+`server/app/search.py`의 폴백이 원본 인덱스를 다시 찾는다.
+
+### 임베딩을 새 버전으로 교체할 때 (명섭 → 선우 → 민경욱 순서)
+
+임베딩은 공시 4,204건을 검색 가능한 형태로 미리 변환해 둔 색인이다. **만드는 건 명섭,
+쓰는 건 선우, 제출 서버에 올리는 건 민경욱**이다. 새 임베딩이 와도 바로 서버에 넣지 않는다:
+
+1. 명섭이 새 임베딩을 공유한다
+2. **선우가 로컬에서 dev 58문을 다시 돌려 점수가 떨어지지 않는지 확인한다**
+3. 통과하면 민경욱이 서버 파일을 교체하고 `docker restart` → `/ready` 확인
+4. 통과 못 하면 **올리지 않는다.** 현재 서버는 8/7 임베딩 기준이고, 선우의 58/58도 그 기준이다
+
+검증 안 된 임베딩을 올리면 점수가 떨어져도 원인을 모른다. 9/6 프리즈 후에는 교체 자체가 금지다.
 
 **주의:** 9/6 제출 프리즈 후 재배포 금지, 9/7~9/20 서버 사수, 9/30 전 NCP 리소스 전부 삭제.
