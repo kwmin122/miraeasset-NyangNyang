@@ -107,7 +107,7 @@ def ready():
 
 @app.get("/answer")
 def answer(
-    question: str = Query(..., description="평가 질의"),
+    question: str = Query("", description="평가 질의"),
     question_id: str = Query("Q-unknown", description="평가 질의 ID"),
 ):
     t0 = time.time()
