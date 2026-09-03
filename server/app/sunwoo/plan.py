@@ -657,6 +657,125 @@ SYNTH_SYSTEM = (
 )
 
 
+# ── 잘림 감지 ──────────────────────────────────────────────────────────────
+# hcx 의 length 경고 하나에 기대지 않는다. 실측 T4-O-017(2,635자, 글자 중간 잘림)의
+# trace 가 "합성 완료"로 깨끗했는데, 원인은 hcx.py 가 응답에 존재하지 않는 stopReason
+# 필드를 읽던 버그였다(실물 키는 finishReason — hcx.py 주석 참고). 필드명은 고쳤지만
+# 같은 계열 사고(응답 스키마 변경, PAPERS.md 08-09 의 무신호 간헐 잘림)가 또 나도
+# 잡히게 내용 신호를 이중으로 건다. 계측(trace 기록)이 1순위고, 후처리는 끊긴
+# 마지막 불완전 줄을 지우는 선에서 멈춘다. 재호출로 이어받지 않는다 — 호출이 늘면
+# 429(분당 쿼터)를 앞당긴다(감사 A2).
+
+# 문장 중간에서 끊긴 꼬리의 표식. 실측 잘림 두 건의 실제 꼬리로 만들었다:
+#   T4-O-017      "…방법: 다기관, 무작위배정, 이"   (쉼표 나열 도중 한 글자)
+#   라이브 프로브  "  - 직전 보고서:"                 (콜론 뒤 내용 없음)
+# 정상 답변의 항목 줄도 마침표 없이 명사로 끝나는 일이 많아서("…이중눈가림")
+# "종결어미 없음"으로 넓게 잡으면 오탐이 난다. 명백히 깨진 꼴만 잡는다.
+_CUT_TAIL = re.compile(
+    r"[:,、ㆍ·]$"                                    # 콜론·쉼표·가운뎃점으로 끝
+    r"|,\s*[가-힣]{1,2}$"                            # 쉼표 나열 도중 1~2글자 토막
+    r"|(?:^|[\s(（])(?:및|또는|그리고|약|총|각)$"    # 접속·수식어 단독으로 끝
+    r"|[(\[（]$")                                    # 여는 괄호로 끝
+
+# maxTokens 도달이 확정됐을 때 답변 끝에 붙는 한 줄. 근거는 다 모았는데 출력이
+# 못 담은 상태라(지표 ② 직격) 조용히 내보내면 미완성 나열로 읽힌다. 한계를 밝히는
+# 쪽이 낫다는 판단은 감사 A6(지표 ⑦은 한계 고지를 가점한다)과 같다.
+# 근거 공시는 retrieved_context 로 같이 나가므로 코퍼스 밖 안내(B4 금지)가 아니다.
+_TRUNC_TAIL_NOTE = ("\n\n※ 출력 길이 제한으로 마지막 항목의 세부 내용 일부가 "
+                    "잘렸습니다. 잘린 세부 내용은 함께 제시된 근거 공시 원문에 있습니다.")
+
+
+def _synth_budget(mode, n_expect):
+    """합성 호출의 max_tokens. list 모드만 건수에 따라 늘린다.
+
+    "총 N건을 하나도 빠뜨리지 말고"를 지시하면서 예산을 1400으로 고정하면 지시와
+    예산이 어긋난다(감사 B2). 실측 T4-O-017: 4건 나열이 1400토큰(2,635자, 프로브
+    실측 약 1.9~2.0자/토큰)에서 글자 중간에 잘리고도 채점만 통과해 가려져 있었다.
+    건당 400토큰(실측 건당 약 660자 + 세부항목 여유) + 서두 200으로 잡는다.
+
+    ⚠ 상한 2200 을 명시한다 — 출력이 길수록 지연이 늘어 A4(응답 타임아웃)와
+    반대로 당긴다(감사 §D). T4-O-017 이 1400토큰에 35.1s(58문 최대)였으니
+    +800토큰이면 최악 +15s 안팎, 합성 호출 단독으로 WALL_LIMIT 60s 안이다.
+    12건급 나열은 2200으로도 다 못 담는다 — 그건 _check_truncation 이 trace 에
+    남기고 꼬리를 정리한다. 재호출로 이어받는 방법은 429 위험이라 쓰지 않는다.
+    """
+    if mode != "list":
+        return 1400
+    return min(2200, max(1400, 200 + 400 * n_expect))
+
+
+def _date_rx(dt):
+    """접수일 YYYYMMDD 가 답변에 어떤 표기로든 적혔는지 찾는 정규식.
+
+    20230213 / 2023-02-13 / 2023.02.13 / 2023년 2월 13일 을 전부 잡는다.
+    일(日) 뒤에는 숫자를 금지한다 — 3일 패턴이 30일에 걸리는 오탐을 막는다.
+    """
+    if not re.fullmatch(r"\d{8}", dt or ""):
+        return None
+    y, m, d = dt[:4], int(dt[4:6]), int(dt[6:8])
+    return re.compile(dt + "|" + y + r"[.\-/년]\s*0?" + str(m)
+                      + r"[.\-/월]\s*0?" + str(d) + r"(?!\d)")
+
+
+def _check_truncation(text, note, mode, n_expect, dates):
+    """합성 답변의 잘림을 감지해 note(→think_trace)에 남기고, 확정 잘림만 꼬리 정리.
+
+    신호 세 개를 따로 적는다 — 어느 하나가 죽어도 나머지가 남는다:
+      A. hcx 의 maxTokens 도달 경고 (finishReason / completionTokens)
+      B. 마지막 줄이 명백히 깨진 꼴로 끝남 (_CUT_TAIL)
+      C. list 모드에서 근거 접수일 중 답변에 등장한 종수 부족 (계측만, 본문 불변)
+    본문 후처리는 A(확정 신호)일 때만 한다: 깨진 꼬리 줄을 최대 2줄 지우고 한계
+    고지 한 줄을 붙인다. B 단독으로는 본문을 건드리지 않는다 — 오탐이면 멀쩡한
+    줄을 지우게 되고, 그게 잘림 자체보다 나쁘다.
+    """
+    truncated = "잘렸을 수 있음" in (note or "")
+    lines = text.rstrip().split("\n")
+    tail = lines[-1].strip() if lines else ""
+    if tail and _CUT_TAIL.search(tail) and not truncated:
+        note = (note or "") + " -> [잘림감지] 마지막 줄이 문장 중간에서 끊김"
+    if mode == "list":
+        uniq = sorted({d for d in dates if re.fullmatch(r"\d{8}", d or "")})
+        hit = 0
+        for d in uniq:
+            rx = _date_rx(d)
+            hit += bool(rx and rx.search(text))
+        if uniq and hit < min(n_expect, len(uniq)):
+            note = (note or "") + (f" -> [잘림감지] 근거 접수일 {len(uniq)}종 중 "
+                                   f"답변에 {hit}종만 등장(요구 {n_expect}건)")
+    if truncated:
+        # 꼬리 정리는 깨진 꼴이 확인된 곳에만, 최대 2곳까지 — 그 위는 완결인지
+        # 판별할 수 없으므로 남긴다(과잉 삭제가 잘림 자체보다 나쁘다).
+        # 줄 전체를 지우지 않는다: 끊긴 줄 앞쪽에 정답 값이 있을 수 있다
+        # (예: "- 취득예정금액: 2,682,737,598,000원, 이" — 줄을 지우면 금액까지
+        # 날아간다). 깨진 토막만 잘라내고, 콜론 머리만 남는 줄(값이 아예 안 나온
+        # 항목 이름)이나 빈 줄만 통째로 걷어낸다.
+        removed = 0
+        while len(lines) > 1 and removed < 2:
+            t = lines[-1].strip()
+            if not t:
+                lines.pop()          # 꼬리의 빈 줄은 세지 않고 걷어낸다
+                continue
+            m = _CUT_TAIL.search(t)
+            if not m:
+                break
+            kept = t[:m.start()].rstrip()
+            # 콜론에서 끊겼거나("- 직전 보고서:") 뗀 뒤 콜론 머리·빈 줄만 남으면
+            # 값이 아예 안 나온 항목 이름이다 — 줄째 지우고 그 위 줄을 마저 본다.
+            if m.group(0) == ":" or not kept or kept.endswith((":", "：")):
+                lines.pop()
+                removed += 1
+                continue
+            # 그 밖에는 깨진 토막만 뗀다 — 들여쓰기를 보존한 채 줄을 고친다.
+            lines[-1] = lines[-1][:len(lines[-1]) - len(lines[-1].lstrip())] + kept
+            removed += 1
+            break
+        if removed:
+            note = (note or "") + f" -> [잘림감지] 끊긴 꼬리 정리({removed}곳)"
+        note = (note or "") + " -> 한계 고지 꼬리 부착"
+        text = "\n".join(lines).rstrip() + _TRUNC_TAIL_NOTE
+    return text, note
+
+
 def synthesize(question, plan, results):
     groups, notes = [], []
     for st in plan["steps"]:
@@ -746,7 +865,16 @@ def synthesize(question, plan, results):
               "timeline": "시간순으로 사건 경과를 정리하고 최종 상태를 명시하라."}[mode]
            + (" " + " ".join(extra) if extra else ""))
     msgs = [{"role": "system", "content": SYNTH_SYSTEM}, {"role": "user", "content": ask}]
-    text, note = call_hcx(msgs, max_tokens=1400)
+    # 예산·감지의 기준 건수: 질문이 요구 건수를 명시하면 프롬프트도 그 건수만
+    # 쓰라고 지시하므로(위 extra) 근거 총량이 아니라 요구 건수를 따른다.
+    n_expect = total
+    if counts and str(counts[0]).isdigit():
+        n_expect = min(int(counts[0]), total)
+    text, note = call_hcx(msgs, max_tokens=_synth_budget(mode, n_expect))
+    if text:
+        # 잘림 감지·계측. 접수일은 프롬프트에 실제로 들어간 근거(그룹당 12건)만 센다.
+        dates = [it.get("rcept_dt") or "" for _, items, _st in groups for it in items[:12]]
+        text, note = _check_truncation(text, note, mode, n_expect, dates)
     return text, context, note
 
 

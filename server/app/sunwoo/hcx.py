@@ -209,7 +209,16 @@ def call_hcx(messages, max_tokens=1000, temperature=0, retries=3, wall=None):
             return None, "빈 응답"
 
         note = ""
-        if body.get("stopReason") == "length":
+        # v3 응답에 stopReason 필드는 없다 — 실물 키는 finishReason 이다.
+        # (2026-09-04 프로브 실측: maxTokens=30 강제 잘림 응답의 result 키가
+        #  message/finishReason/created/seed/usage 이고 finishReason="length".)
+        # stopReason 으로 읽던 탓에 이 경고는 한 번도 발동한 적이 없고,
+        # T4-O-017 이 1400토큰에서 글자 중간에 잘리고도 trace 가 "합성 완료"로
+        # 깨끗했던 원인이 이것이다(감사 B2). 필드명이 또 바뀌는 사고에 대비해
+        # usage.completionTokens 가 예산에 닿았는지를 보조 신호로 같이 건다.
+        fin = body.get("finishReason") or body.get("stopReason")
+        out_tok = (body.get("usage") or {}).get("completionTokens")
+        if fin == "length" or (isinstance(out_tok, int) and out_tok >= max_tokens):
             note = " -> [경고] maxTokens 도달로 답변이 잘렸을 수 있음"
         return text, note
 
