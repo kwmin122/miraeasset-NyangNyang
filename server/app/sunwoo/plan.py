@@ -703,6 +703,18 @@ def synthesize(question, plan, results):
         extra.append(
             f"질문이 요구한 건수는 {n_req}건이다. 근거가 그보다 많으면 질문에 적힌 조건(계약명·품목·날짜)과 "
             f"가장 정확히 맞는 {n_req}건만 골라 정리하고, 합계도 그 {n_req}건으로만 계산하라. 나머지는 적지 마라.")
+    # "실제로 언제/얼마" 를 물으면 결정 공시가 아니라 실행 공시가 답이다.
+    # 실측(hard_v1 T5-C-008): 결정 공시(폐지 예정일 2025-03-31)와 실행 공시(매매 종료일
+    # 2025-02-13)를 둘 다 회수하고(ev 1.00) 날짜순으로 나열만 한 채 어느 쪽이 "실제로
+    # 일어난 일"인지 고르지 않았다. 예정일이 must_not 이라 오답.
+    # 상시 규칙로 걸지 않는다 — 프롬프트 한 줄이 무관 문항 2개를 깬 전례(실험 20-c).
+    # 이 조건은 dev 58문·변형 232문에서 발동 0건, hard_v1 에서 T5-C-008 만 잡는다(전수 확인).
+    if re.search(r"실제로|실제\s*(일어|발생|실행|종료|체결|취득|처분)|결국\s*언제", question or ""):
+        extra.append(
+            "질문은 '실제로 일어난 일'을 묻는다. 근거에 '예정·결정' 공시와 그 뒤의 '실행·완료' "
+            "공시가 같이 있으면, 실제로 일어난 일은 실행·완료 공시에 적힌 값이다. "
+            "결정 공시의 예정일·예정 수량을 실제 일자·수량으로 쓰지 마라. 두 값이 다르면 "
+            "실행 공시의 값을 답으로 제시하고, 예정값은 '당초 예정'이라고만 구분해 언급하라.")
     # 일반인 말투로 물으면 답도 설명이어야 한다.
     # "삼성이 인수한 거야?"에 유상증자 공시 항목을 그대로 옮겨 적은 실측이 있다(OQ-60).
     # 이런 질문은 대개 전제가 부정확해서(인수 ≠ 콜옵션 행사에 따른 최대주주 변경)
@@ -1000,6 +1012,61 @@ KO_AMT = (r"\d[\d,]*조(?:\s*[\d,]+억)?\s*원?|[\d,]{3,}\s*억\s*원"
           r"|\d{1,3}(?:,\d{3}){2,}\s*원?")
 
 
+# 컨텍스트 머리표에서 근거번호 -> 접수번호를 읽는다. build_context 가 만든 형식과 짝이다.
+_FOOT_HEAD = re.compile(r"\[근거\s*(\d+)\s*/\s*\d+(?:\s*\|[^\]]*)?\][^\n]*?접수번호\s*(\d+)")
+_FOOT_MARK = re.compile(r"[\(\[]\s*근거\s*([\d/,\s]+)[\)\]]")
+# 정정 신고서는 `항목 | 정정전 | 정정후` 순으로 두 값을 나란히 적는다.
+_FOOT_COR = re.compile(r"정\s*정\s*(?:전|후)")
+
+
+def _cited_rcept(text, context):
+    """답변이 '(근거 N)' 으로 지목한 문서들의 접수번호 집합.
+
+    각주를 '답변이 실제로 인용한 문서'로 묶기 위한 것이다. 예전엔 회수한 문서를
+    전부 이어붙여 훑어서, 답변과 무관한 문서의 금액을 근거인 양 붙였다(TR-NAME-001).
+    """
+    src = {n: no for n, no in _FOOT_HEAD.findall(context or "")}
+    if not src:
+        return set()
+    out = set()
+    for m in _FOOT_MARK.finditer(text or ""):
+        for tok in re.split(r"[,\s]+", m.group(1)):
+            n = tok.split("/")[0].strip()
+            if n in src:
+                out.add(src[n])
+    return out
+
+
+def _amount_after(label, seg):
+    """`seg` 안에서 label 뒤에 오는 금액을 고른다. 정정 표면 마지막(정정 후) 값.
+
+    실측(T6-O-010): `계약금액(원) | 154,102,712,000 | 178,800,382,017` 에서
+    라벨 뒤 첫 값이 정정 전이다. CORRECTION_RULES 로 HCX 는 잡아놨는데
+    그 뒤에 붙는 코드 보강이 폐기값을 도로 끌고 들어왔다.
+
+    '마지막 값'의 범위는 **구분자만 사이에 두고 연달아 붙은 금액**까지다.
+    처음엔 "라벨 뒤 160자 안 마지막 금액"으로 잡았다가, 정정 문서의
+    `계약금액(원) 198,437,328,900 최근매출액(원) 2,220,751,868,438` 에서
+    다른 항목인 최근매출액을 집었다(TR-NAME-001 실측). 한글 라벨이 나오면 끊는다.
+    """
+    m = re.search(re.escape(label) + r"[^\n]{0,14}?(" + KO_AMT + r")", seg)
+    if not m:
+        return None
+    first = m.group(1).strip()
+    if not _FOOT_COR.search(seg):
+        return m.group(0).strip(), first
+    # 정정 표다. 첫 값 뒤에 구분자(공백·|·/·원)만 두고 이어지는 금액 나열의 마지막이 정정 후.
+    vals, pos = [first], m.end()
+    while True:
+        m2 = re.match(r"[\s|/]{0,6}(?:원\s*)?(" + KO_AMT + r")", seg[pos:])
+        if not m2:
+            break
+        vals.append(m2.group(1).strip())
+        pos += m2.end()
+    if len(vals) >= 2:
+        return f"{label} {vals[-1]}", vals[-1]
+    return m.group(0).strip(), first
+
 def _postfix(text, context, results, trace, question=""):
     """합성 결과에서 코드가 아는 사실이 빠졌으면 채운다.
 
@@ -1045,30 +1112,36 @@ def _postfix(text, context, results, trace, question=""):
                               for r in results.values() for it in (r.get("items") or []))
 
     asked = [w for w in AMT_ITEMS if w in (question or "")]
-    if asked:
+    # 답변이 인용한 문서에서만 뽑는다. 인용이 없으면 각주를 붙이지 않는다 —
+    # 어느 문서에서 왔는지 말할 수 없는 값을 "근거 원문"이라 적는 게 결함의 뿌리였다.
+    cited = _cited_rcept(text, context)
+    if asked and cited:
         picked, seen = [], set()
-        flat = re.sub(r"\s+", " ", full)
+        # 문서 단위로 훑는다. 이어붙이면 매치의 출처를 잃는다.
+        docs_txt = [re.sub(r"\s+", " ", it.get("text") or "")
+                    for r in results.values() for it in (r.get("items") or [])
+                    if str(it.get("rcept_no") or "") in cited]
+        if not docs_txt:
+            docs_txt = []
         for it in asked:
             # 앞 문맥은 어느 기수·기준의 값인지 밝히는 수식어만 붙인다.
             # 아무 앞글자나 14자 붙이면 "7,000억원, 영업이익 2,277억원"처럼
             # 앞 항목의 숫자 중간에서 잘린 인용이 나온다(단위검증에서 확인).
-            pat = re.compile(r"(?:20\d{2}년\s*)?(?:연결기준\s*|별도기준\s*|연간\s*|당기\s*|전기\s*)?"
-                             # 항목명과 값 사이에 "(원)", "(백만원)" 같은 단위 표기가
-                             # 낀다. 한글을 막는 [^가-힣] 로는 그 괄호를 못 넘어서
-                             # "계약금액(원) 105,400,000,000" 이 통째로 안 잡혔다.
-                             + re.escape(it) + r"[^\n]{0,14}?(" + KO_AMT + r")")
             # 항목마다 할당량을 따로 준다. 전체 상한만 두면 첫 항목이 예산을 독식한다.
             # 실측(T6-O-005): KO_AMT 에 원 단위 정수를 더한 뒤 '매출액' 매칭이 폭증해
             # 4칸을 전부 매출액이 가져갔고, 정작 물어본 '영업이익 1조 1,168억원'이
             # 밀려나 2/4 로 미달했다. 질문이 여러 항목을 물으면 항목마다 나와야 한다.
             take = 0
-            for m in pat.finditer(flat):
-                amt = m.group(1).strip()
+            for dt in docs_txt:
+                got = _amount_after(it, dt)
+                if not got:
+                    continue
+                quote, amt = got
                 key = amt.replace(" ", "").rstrip("원")
                 if not key or key in seen or key in text.replace(" ", ""):
                     continue
                 seen.add(key)
-                picked.append(m.group(0).strip())
+                picked.append(quote)
                 take += 1
                 if take >= 2 or len(picked) >= 6:
                     break
