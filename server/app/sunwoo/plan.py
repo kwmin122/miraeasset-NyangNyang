@@ -753,7 +753,16 @@ def synthesize(question, plan, results):
 _OFF_NUM = re.compile(r"\d[\d,]{2,}|\d+(?:\.\d+)?\s*%")
 
 
-def _compose_offline(question, plan, results, context, trace):
+# 합성이 429로 죽어 코드 조립으로 강등될 때 답변 맨 앞에 붙는 한계 고지.
+# 강등 답변은 질문에 답하지 않고 근거를 나열만 하는데, 겉모습은 정상 답변과
+# 구분이 안 된다(실측: 오히려 더 길다). 답변인 척하지 않고 한계를 밝힌다.
+# 거짓 전제 가드(evidence_only_answer)는 정상 경로라 이 서두를 쓰지 않는다.
+_DEGRADE_HEAD = ("일시적인 시스템 제약으로 이 질문에 대한 완결된 답변을 생성하지 "
+                 "못했습니다. 정확한 최종 답변은 지금 확인할 수 없어, 대신 수집된 "
+                 "공시 근거에서 질문과 관련해 확인된 내용을 원문 표기 그대로 정리합니다.")
+
+
+def _compose_offline(question, plan, results, context, trace, lead=None):
     """합성 호출이 죽었을 때 이미 모은 근거로 코드가 답을 만든다. HCX 호출 0회.
 
     질문이 물은 항목·단서가 든 문장만 근거에서 원문 그대로 옮긴다.
@@ -828,9 +837,12 @@ def _compose_offline(question, plan, results, context, trace):
         if len(pairs) >= 12:
             break
 
-    trace.append("합성 실패 -> 코드가 근거 원문으로 답 구성(호출 0회)")
-    out = ("아래는 제공된 공시 근거에서 질문과 관련해 확인된 내용입니다. "
-           "원문 표기를 그대로 옮겼습니다.\n\n" + "\n".join(lines))
+    # 주의: 함수 파라미터는 lead 다. head 는 위 루프에서 문서 머리표로 쓰는
+    # 로컬 변수라 이름을 겹치면 안 된다(실측: 겹쳤더니 서두가 머리표로 바뀌었다).
+    trace.append("합성 실패 -> 코드가 근거 원문으로 답 구성(호출 0회)"
+                 + (" + 한계 고지 서두" if lead else ""))
+    out = ((lead or "아래는 제공된 공시 근거에서 질문과 관련해 확인된 내용입니다. "
+            "원문 표기를 그대로 옮겼습니다.") + "\n\n" + "\n".join(lines))
     if pairs:
         out += "\n\n※ 근거에서 질문 항목 옆에 적힌 수치: " + " / ".join(pairs) + "."
     return out
@@ -981,7 +993,8 @@ def answer_with_plan(question):
         # 두 번 더 쓰면서 이미 모은 근거를 버리고 다시 검색한다(실측 ev 1.00 -> 0.25).
         # 계획이 나빠서가 아니라 쿼터가 말라서 죽은 것이므로 근거는 멀쩡하다.
         if "API" in (snote or "") or "시간초과" in (snote or "") or "지연" in (snote or ""):
-            off = _compose_offline(question, plan, results, context, trace)
+            off = _compose_offline(question, plan, results, context, trace,
+                                   lead=_DEGRADE_HEAD)
             if off:
                 if FIX_ON:
                     off = _postfix(off, context, results, trace, question)
