@@ -1392,5 +1392,25 @@ def _postfix(text, context, results, trace, question=""):
         text = text.rstrip() + "\n\n※ 근거 원문 금액: " + ", ".join(f"{b}원" for b in back) + "."
         trace.append("원 단위 금액을 코드가 보강")
 
+    # trace 단계가 정정 체인을 따라갔는데 체인이 갈라져 있으면(한 원공시에 정정본 둘)
+    # 회수는 최신 분기 한쪽만 걷는다(tools.chain_of). 걸러진 정정본의 접수번호는
+    # 답변 어디에도 안 남는다 — 실측(T5-C-004, 근거표시 0.00): 20241030 유상증자
+    # 체인이 11-13·11-14 두 정정본으로 갈라졌고 11-13 접수분이 표시에서 통째로
+    # 빠졌다. 계보는 correction_map 이 아는 사실이므로 코드가 접수번호만 표시한다.
+    # 검색·본문·retrieved_context 는 건드리지 않고, 회수가 온전했으면(빠진 분기
+    # 없음) 아무것도 붙지 않아 나머지 trace 문항(dev 3문)의 답변은 그대로다.
+    for r in results.values():
+        st = r.get("step") or {}
+        if st.get("tool") != "trace" or not st.get("date"):
+            continue
+        anchor = str(st["date"]).replace("-", "")
+        got = {str(it.get("rcept_no") or "") for it in (r.get("items") or [])}
+        chain = next((T.full_chain(rn) for rn in sorted(got) if rn.startswith(anchor)), None)
+        if chain and len(chain) >= 2 and [rn for rn in chain if rn not in got and rn not in text]:
+            text = (text.rstrip() + "\n\n※ 이 사건 공시의 정정 계보(접수번호): "
+                    + " → ".join(chain) + ".")
+            trace.append("정정 계보를 코드가 보강")
+            break
+
     return text
 

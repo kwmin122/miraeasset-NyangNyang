@@ -36,7 +36,7 @@ _EV_HEAD = re.compile(
 _CITE_MARK = re.compile(r"[\(\[]\s*근거\s*([\d/,\s]+)[\)\]]")
 
 
-def attach_sources(text, context, limit=4):
+def attach_sources(text, context, limit=12):
     """답변의 '(근거 N)' 내부 번호를 실제 출처로 옮겨 끝에 붙인다.
 
     BASE_RULES 는 "보고서명(접수일, 접수번호)로 표기하라"고 하는데 CITE_RULES 의
@@ -44,8 +44,17 @@ def attach_sources(text, context, limit=4):
     읽는 사람도 심사도 검증할 수 없는 출처다. 근거완전성은 정확성·요구충족과 함께 배점 축이다.
 
     번호와 문서의 대응은 컨텍스트를 만든 코드가 알고 있으니 코드가 옮긴다.
-    답변이 번호를 안 달았으면 컨텍스트 앞쪽 근거를 순서대로 붙인다.
-    이미 접수번호를 쓴 답변은 건드리지 않는다.
+    본문에 이미 접수번호를 쓴 답변은 건드리지 않는다(코드가 붙인 ※ 각주 줄은
+    본문 인용으로 치지 않는다 — 정정 계보 각주가 접수번호를 담기 때문).
+
+    회수 문서는 전부 싣고, 문서(접수번호) 단위로 중복을 걷어낸다 — 구멍 6 실측 5문의
+    수리다(HARD_SET_V1_FINDINGS). 같은 문서의 청크 여럿이 근거 번호를 나눠 가져서
+    (T6-O-002 는 근거 1~6 이 전부 같은 사업보고서다), ① 답변이 단 번호만 옮기면
+    실제로 쓴 다른 문서가 빠지고(2023년 보고서가 근거 7 이후라 통째로 탈락),
+    ② 같은 접수번호가 트레일러에 두세 번 반복되며(B5), ③ limit=4 가 다섯 번째
+    문서를 잘랐다(T4-O-016 의 20231211 건). 인용된 문서를 앞에 두고 나머지 회수
+    문서를 이어 붙인다 — 목록의 전거는 retrieved_context 그대로라 새 정보를
+    만들지 않고, 근거 없는 답변(컨텍스트 빈 가드 경로)에는 아무것도 붙지 않는다.
     """
     if not text or not context:
         return text
@@ -56,8 +65,9 @@ def attach_sources(text, context, limit=4):
             src[n] = (nm, dt, no)
     if not src:
         return text
-    if any(no and no in text for _, _, no in src.values()):
-        return text                       # 이미 접수번호를 밝힌 답변
+    body = re.sub(r"(?m)^※.*$", "", text)
+    if any(no and no in body for _, _, no in src.values()):
+        return text                       # 이미 본문에 접수번호를 밝힌 답변
 
     used = []
     for m in _CITE_MARK.finditer(text):
@@ -65,14 +75,20 @@ def attach_sources(text, context, limit=4):
             n = tok.split("/")[0].strip()
             if n and n in src and n not in used:
                 used.append(n)
-    if not used:                          # 번호를 안 달았으면 앞쪽부터
-        used = sorted(src, key=lambda x: int(x))[:limit]
+    # 인용된 번호를 앞에, 나머지 회수 문서를 뒤에 — 전부 싣는다.
+    order = used + [n for n in sorted(src, key=lambda x: int(x)) if n not in used]
 
-    out = []
-    for n in used[:limit]:
+    out, seen = [], set()
+    for n in order:
         nm, dt, no = src[n]
+        key = no or (nm + dt)             # 문서 단위 dedup. 접수번호가 없으면 이름+접수일
+        if key in seen:
+            continue
+        seen.add(key)
         d = f"{dt[:4]}-{dt[4:6]}-{dt[6:8]}" if len(dt) == 8 else dt
         out.append(f"{nm} ({d}, 접수번호 {no})" if no else f"{nm} ({d})")
+        if len(out) >= limit:
+            break
     if not out:
         return text
     return text.rstrip() + "\n\n근거: " + " / ".join(out)

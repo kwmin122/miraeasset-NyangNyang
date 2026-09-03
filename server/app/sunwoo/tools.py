@@ -119,6 +119,24 @@ def chain_of(d):
     return out
 
 
+def full_chain(rcept_no):
+    """이 공시에서 갈라져 나간 정정 계보의 접수번호 전부(분기 포함, 오름차순).
+
+    chain_of 는 회수용이라 분기점에서 최신 한쪽만 걷는다(한 원공시에 정정본이
+    둘이면 하나를 건너뛴다). 계보 '표시'에는 전 분기가 필요해서 따로 둔다 —
+    실측(T5-C-004): 20241030 유상증자 체인이 11-13·11-14 두 정정본으로 갈라졌고
+    회수가 11-14 쪽만 걸어 11-13 접수분이 답변 어디에도 안 남았다(근거표시 0.00).
+    """
+    seen, todo = set(), [str(rcept_no)]
+    while todo:
+        cur = todo.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        todo += [x for x in s.superseded_by.get(cur, []) if x not in seen]
+    return sorted(seen)
+
+
 def _root_of(d):
     """정정본이 들어오면 원본까지 거슬러 올라간다."""
     seen = set()
