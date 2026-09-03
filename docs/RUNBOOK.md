@@ -32,8 +32,10 @@ docker inspect gongsi --format '{{.State.OOMKilled}} {{.RestartCount}}'   # fals
 df -h /                                     # 디스크 여유 (로그 누적 — 80% 넘으면 §3-D)
 docker exec gongsi tail -3 logs/requests.jsonl   # 최근 요청에 error 필드 null인지
 
-# ④ HCX 상태 (컨테이너 안 로그로)
-docker exec gongsi tail -5 logs/hcx_usage.jsonl  # success:false 연속이면 §3-B
+# ④ HCX 강등 계수 (어제 하루치 — 이게 429 폭주 조기경보다)
+docker exec gongsi sh -c 'grep -c "합성 실패" logs/requests.jsonl; grep -c "API오류 429" logs/requests.jsonl'
+# 기대: 둘 다 0 또는 어제와 같은 값. 늘었으면 §3-B
+# 주의: logs/hcx_usage.jsonl 은 sunwoo 모드에서 한 줄도 안 쌓인다(baseline 전용). 그 파일 보지 마라.
 
 # ⑤ NCP 콘솔에서 크레딧 잔량 확인 (과금 초과 = 서버 정지 위험)
 ```
@@ -67,6 +69,15 @@ docker run -d --name gongsi --restart unless-stopped \
 ## 3. 장애 시나리오별 대응
 
 ### A. `/ready`가 503이거나 접속 불가
+
+**A-0. SSH가 안 붙으면 서버 장애를 의심하기 전에 ACG부터 본다 (9/3 실제 발생).**
+집·회사 공인 IP는 통신사가 말없이 바꾼다. 그러면 서버는 멀쩡한데 나만 못 들어간다.
+판별: `curl -s http://49.50.143.160/ready` 가 200이면 서버는 살아 있고 **내 IP만 막힌 것**이다.
+복구: NCP 콘솔 → Server → ACG → `gongsi` 규칙 설정 → TCP 22 행에서
+**`myIp` 버튼을 눌러** 현재 IP를 넣고(손으로 타이핑 금지 — 화면에 적힌 값은 이미 낡았다)
+**[추가] 후 [적용]까지** 누른다. 그리고 **옛 22번 규칙은 삭제한다**(열어둔 채 쌓지 마라).
+80번 규칙은 절대 건드리지 않는다 — 평가자가 그 문으로 들어온다.
+
 1. `ssh -i ~/.ssh/nyangnyangkey.pem root@49.50.143.160` → `docker ps -a`
 2. 컨테이너 Up인데 503 → 워밍업 중일 수 있음. 2분 기다렸다 재확인. 계속 503이면 `docker logs --tail 50 gongsi`에서 `warmup_error` 확인 → `docker restart gongsi`
 3. 컨테이너 Exited/Restarting → `docker inspect gongsi --format '{{.State.OOMKilled}}'`
@@ -77,12 +88,19 @@ docker run -d --name gongsi --restart unless-stopped \
 
 ### B. HCX 오류 연속 (429/타임아웃/5xx)
 - **서버는 자동으로 추출형 폴백으로 강등되므로 /answer는 계속 200이다. 당황해서 서버를 건드리지 말 것.**
-- `docker exec gongsi tail -20 logs/hcx_usage.jsonl`로 error_type 분포 확인
+- 강등 건수 확인: `docker exec gongsi grep -c "합성 실패" logs/requests.jsonl`
+  (`logs/hcx_usage.jsonl` 은 sunwoo 모드에서 존재하지 않는다. 예전 baseline 전용 파일이다.)
+- 원문 한 건 보기: `docker exec gongsi sh -c 'grep "API오류 429" logs/requests.jsonl | tail -1'`
 - CLOVA Studio 콘솔에서 크레딧·rate limit 상태 확인
 - 키 만료/폐기가 원인일 때만: 서버에서 직접 `.env` 수정(새 키) → `docker restart gongsi` (키는 여전히 카톡·git 금지)
 
 ### C. 응답은 200인데 품질이 이상함
-- think_trace의 `[HCX 사용]`/`[폴백 사용]` 태그로 강등 여부부터 확인 (`docker exec gongsi grep -c "폴백 사용" logs/requests.jsonl`)
+- think_trace로 강등 여부부터 확인:
+  `docker exec gongsi grep -c "합성 실패" logs/requests.jsonl`
+  (`[HCX 사용]`/`[폴백 사용]` 은 **baseline 모드 문구라 sunwoo 로그엔 절대 안 나온다.** 0건이 나와도 정상의 증거가 아니다.)
+- 답변이 `아래는 제공된 공시 근거에서 질문과 관련해 확인된 내용입니다` 로 시작하면 두 가지 중 하나다:
+  - trace에 `[가드] 거짓전제 판정` 이 같이 있으면 **정상**이다(거짓 전제 질문에 일부러 LLM을 안 부른다).
+  - trace에 `합성 실패(API오류 429)` 가 있으면 **강등**이다 → §B.
 - 강등이면 §B. 강등이 아니면 **아무것도 하지 않는다** — 프리즈 후 프롬프트·코드 수정 금지, "알려진 제약"에 기록만
 
 ### D. 디스크 80% 초과
@@ -99,6 +117,9 @@ docker system prune -f          # 미사용 이미지·빌드캐시만 정리 (�
       `mock`이면 더미 응답이라 **전 문항 0점**, `baseline`이면 선우 모듈이 안 도는 상태다.
       `config.py` 기본값이 `mock`이고 배포는 손으로 쓴 `.env`를 읽으므로, 그 한 줄을 빠뜨리면 조용히 이렇게 된다.
       (Dockerfile에 `ENV AGENT_MODE=sunwoo`를 박아 뒀지만 `--env-file`이 덮으므로 실물로 확인할 것)
+- [ ] **★ `/health` 만 보고 끝내지 마라**: `/health` 는 `_ready_state` 를 보지 않아 **워밍업이 실패해도 항상 초록불**이다.
+      반드시 같이 볼 것 → `curl -s 49.50.143.160/ready` (`{"status":"ready"}`) +
+      `curl -s "49.50.143.160/answer?question=삼성전자+최근+공시+알려줘&question_id=freeze-check"` 로 실제 답변 1발
 - [ ] NCP의 이미지가 freeze 커밋 기준 빌드인지 확인 (`docker inspect gongsi --format '{{.Config.Image}}'` + 빌드 시점 기록)
 - [ ] `--restart unless-stopped` 확인: `docker inspect gongsi --format '{{.HostConfig.RestartPolicy.Name}}'`
 - [ ] **재부팅 생존 실증**: NCP 콘솔 재부팅 → 자동 복구 → /ready 200 (1회 실연)
