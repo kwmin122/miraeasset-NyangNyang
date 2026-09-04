@@ -48,15 +48,15 @@ print(r.json())   # question_id, question, retrieved_context, think_trace, answe
 - 질의가 코퍼스 범위(2023-01~2026-03) 밖이거나 해당 공시가 없어도 **200 + 5필드**를 반환한다 (거절 사유를 `answer`에 담는다).
 - 상태 확인용 보조 엔드포인트: `GET /health` (에이전트 모드 확인), `GET /ready` (워밍업 완료 여부).
 
-**S7 배포 실측 (2026-09-02, NCP c2-g3a 2vCPU/4GB x86_64)**
+**S8v2 배포 실측 (2026-09-04, NCP c2-g3a 2vCPU/4GB x86_64, 임베딩 v2 / 258,459청크)**
 
 | 항목 | 실측 |
 |---|---|
-| dev 58문 정답률 (외부 경유 채점) | **58/58 (100%)** — 로컬과 동일 |
-| 최대 응답 지연 | 35.1s (주최측 타임아웃 300s 대비 여유) |
-| 콜드 스타트 워밍업 | 48s |
-| 재부팅 자동 복구 | `/health` 36s, `/ready` 87s (`--restart unless-stopped` + `@reboot` 자동 예열) |
-| 컨테이너 메모리 | 2.98GB / 3.32GB (OOM 없음, 스왑 2GB 대기) |
+| dev 58문 정답률 (외부 경유 채점) | **58/58 (100%)** |
+| 최대 응답 지연 | 39.9s (주최측 타임아웃 300s 대비 여유) |
+| 콜드 스타트 워밍업 | 64s |
+| 재부팅 자동 복구 | `/health` 36s, `/ready` 87s (S7 실측 — `--restart unless-stopped` + `@reboot` 설정이 동일해 재측정하지 않았다) |
+| 컨테이너 메모리 | 58문 채점 직후 1.87GB / 3.32GB (OOM 없음, 스왑 2GB 대기) |
 
 ## 대용량 제출물 — 임베딩·인덱스 (Google Drive)
 
@@ -72,8 +72,9 @@ print(r.json())   # question_id, question, retrieved_context, think_trace, answe
 | 사용법 (Markdown) | 압축 해제 후 배치 경로와 사용 방법 |
 
 배치 경로는 아래 [처음 세팅](#처음-세팅-팀원-온보딩--위에서-아래로-그대로) 2번과 같다.
-**평가용 API 서버(`http://49.50.143.160/answer`)에는 이 산출물이 이미 배치되어 동작
-중이므로, 평가를 위해 별도로 내려받을 필요는 없다.** 재현·검증용 자료다.
+**평가용 API 서버(`http://49.50.143.160/answer`)에는 이 v2 산출물이 배치되어 동작 중이므로
+(2026-09-04 교체, 외부 경유 58/58 확인), 평가를 위해 별도로 내려받을 필요는 없다.**
+재현·검증용 자료다.
 
 ## 팀원용 — 지금 상태와 각자 할 일
 
@@ -184,7 +185,7 @@ python3 evalset/run_eval.py            # questions_v1.jsonl 전체 채점
 |---|---|---|---|
 | `data/corpus/**.xml` (공시 원문) | 5.2GB | **안 올림** | 실행 중 XML을 여는 코드가 한 줄도 없다. 공시 본문은 이미 `chunk_meta.jsonl` 안에 들어 있다 |
 | `data/corpus/manifest.jsonl` | 2.4MB | 올림 | `server/app/sunwoo/slice4.py`가 공시 목록을 여기서 읽는다 |
-| `data/share_embeddings/out/chunk_meta.jsonl` | 1.04GB | 올림 | 검색 결과의 본문. `search_patch.py`의 `Resolver`가 통째로 훑는다 |
+| `data/share_embeddings/out/chunk_meta.jsonl` | 1.05GB | 올림 | 검색 결과의 본문(258,459청크). `search_patch.py`의 `Resolver`가 통째로 훑는다 |
 | `data/share_embeddings/out/correction_map.json` | 0.7MB | 올림 | 정정공시 계보 판정 |
 | `data/share_embeddings/out/index.faiss` | 2.1GB | **안 올림** | `server/artifacts/index_sq8.faiss`(0.53GB, 같은 인덱스의 압축본)로 대체된다 |
 | `data/share_embeddings/search_lib.py`, `search_patch.py` | 8KB | 올림 | 검색 라이브러리 본체 |
@@ -202,7 +203,7 @@ python3 evalset/run_eval.py            # questions_v1.jsonl 전체 채점
 1. 명섭이 새 임베딩을 공유한다
 2. **선우가 로컬에서 dev 58문을 다시 돌려 점수가 떨어지지 않는지 확인한다**
 3. 통과하면 민경욱이 서버 파일을 교체하고 `docker restart` → `/ready` 확인
-4. 통과 못 하면 **올리지 않는다.** 현재 서버는 8/7 임베딩 기준이고, 선우의 58/58도 그 기준이다
+4. 통과 못 하면 **올리지 않는다.** 현재 서버는 v2 임베딩(258,459청크) 기준이고, 58/58도 그 기준이다
 
 검증 안 된 임베딩을 올리면 점수가 떨어져도 원인을 모른다. 9/6 프리즈 후에는 교체 자체가 금지다.
 

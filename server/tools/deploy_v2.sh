@@ -141,7 +141,11 @@ echo "== 9단계 게이트 전부 통과 =="
 '
 
 say "10. 밖에서 실질 응답 — 한화오션 2024Q1 (v1 이 구조적으로 못 읽던 문서)"
-curl -s --max-time 90 "http://49.50.143.160/answer?question_id=v2-check&question=한화오션+2024년+1분기+보고서+주요+내용" \
+# 한글을 URL 에 그대로 넣으면 uvicorn 이 요청줄에서 걷어내고 400 "Invalid HTTP request" 를
+# 돌려준다(앱까지 가지도 않는다). -G --data-urlencode 로 퍼센트 인코딩해서 보낸다.
+curl -s --max-time 200 -G "http://49.50.143.160/answer" \
+  --data-urlencode "question_id=v2-check" \
+  --data-urlencode "question=한화오션 2024년 1분기 보고서 주요 내용" \
   > /tmp/v2_check.json
 python3 - <<'PY'
 import json
