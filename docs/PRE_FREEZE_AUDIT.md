@@ -268,7 +268,7 @@ docker exec gongsi sh -c 'grep -c "합성 실패" logs/requests.jsonl; grep -c "
 
 ## B. 답변 품질 — 선우
 
-> 📌 **선우는 이 문서 말고 `docs/FOR_SUNWOO.md` 하나만 보면 된다.**
+> 📌 **선우는 이 문서 말고 `docs/ISSUES.md` 하나만 보면 된다.**
 > 아래 B1~B6는 원본 감사 기록이다. 작업지시(우선순위·재현 명령·손대지 말 것)는 그쪽이 정본이다.
 > **B6(개인정보)는 경욱이 회수했다 — 선우 작업 아님.**
 
