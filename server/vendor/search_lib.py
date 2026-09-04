@@ -2,6 +2,7 @@
 """팀 공유용 검색 라이브러리 — 임베딩 산출물만으로 동작 (코퍼스·청커 불필요).
 
 필요 파일(이 파일과 같은 폴더의 out/ 하위): index.faiss, chunk_meta.jsonl, correction_map.json
+선택: table_index.sqlite (표 행 단위 색인 — 확정 수치 조회용, search_lib은 쓰지 않음)
 설치:  pip install faiss-cpu sentence-transformers torch
 사용:
     from search_lib import Searcher
@@ -36,9 +37,12 @@ class Searcher:
         self.meta = [json.loads(l) for l in open(out / "chunk_meta.jsonl", encoding="utf-8")]
         self.superseded_by = json.loads((out / "correction_map.json").read_text(encoding="utf-8"))["superseded_by"]
 
-    def search(self, query: str, k: int = 5, latest_only: bool = True):
+    def search(self, query: str, k: int = 5, latest_only: bool = True, exclude_viewer: bool = True):
         """latest_only=True: 정정본이 결과에 있으면 구본 제거 (일반 질의용).
-        False: 구본도 그대로 반환 (이력 분석 질의용)."""
+        False: 구본도 그대로 반환 (이력 분석 질의용).
+        exclude_viewer=True: doc_role='viewer' 청크 제외. PDF 대체수집 3건에서 나온
+        DART 뷰어 JavaScript 잔해(288청크)라 내용이 없음. 같은 문서의 실제 본문은
+        doc_role='pdftext'로 따로 들어 있으므로 켜두는 것이 맞다."""
         v = self.model.encode(["query: " + query], normalize_embeddings=True,
                               convert_to_numpy=True).astype(np.float32)
         scores, ids = self.index.search(v, k * 3)
@@ -46,7 +50,10 @@ class Searcher:
         for s, i in zip(scores[0], ids[0]):
             if i < 0:
                 continue
-            c = dict(self.meta[i]); c["score"] = float(s)
+            c = dict(self.meta[i])
+            if exclude_viewer and c.get("doc_role") == "viewer":
+                continue
+            c["score"] = float(s)
             c["corrected_by"] = self.superseded_by.get(c["rcept_no"], [])
             hits.append(c)
         if latest_only:

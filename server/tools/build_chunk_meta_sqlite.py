@@ -12,7 +12,9 @@ data/ 원본은 절대 쓰지 않음(읽기만). server/app/search.py의 _patch_
 
 사용법 (repo 루트에서, 또는 아무 위치에서든 — 경로는 __file__ 기준 상대 계산):
     .venv/bin/python3 server/tools/build_chunk_meta_sqlite.py
+    .venv/bin/python3 server/tools/build_chunk_meta_sqlite.py --src /path/to/share_embeddings_v2/out/chunk_meta.jsonl
 """
+import argparse
 import json
 import random
 import sqlite3
@@ -20,11 +22,15 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SRC = REPO_ROOT / "data" / "share_embeddings" / "out" / "chunk_meta.jsonl"
+DEFAULT_SRC = REPO_ROOT / "data" / "share_embeddings" / "out" / "chunk_meta.jsonl"
 DST = REPO_ROOT / "server" / "artifacts" / "chunk_meta.sqlite"
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--src", type=Path, default=DEFAULT_SRC,
+                    help="원본 chunk_meta.jsonl 경로 (기본: data/share_embeddings/out/chunk_meta.jsonl)")
+    SRC = ap.parse_args().src
     DST.parent.mkdir(parents=True, exist_ok=True)
     if DST.exists():
         DST.unlink()

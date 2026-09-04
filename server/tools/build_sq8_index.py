@@ -9,10 +9,12 @@ data/ 원본은 절대 쓰지 않음(읽기만). server/app/search.py의 _patch_
 
 사용법 (repo 루트에서, 또는 아무 위치에서든 — 경로는 __file__ 기준 상대 계산):
     .venv/bin/python3 server/tools/build_sq8_index.py
+    .venv/bin/python3 server/tools/build_sq8_index.py --src /path/to/share_embeddings_v2/out/index.faiss
 
 주의: aarch64(colima)에서 빌드한 인덱스는 FAISS 파일 포맷 자체는 아키텍처 무관이지만,
 NCP(x86_64) 배포 전 재검증 권장 (S7 책임 — CONTEXT.md/LOG.md 참조).
 """
+import argparse
 import time
 from pathlib import Path
 
@@ -20,11 +22,15 @@ import faiss
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SRC = REPO_ROOT / "data" / "share_embeddings" / "out" / "index.faiss"
+DEFAULT_SRC = REPO_ROOT / "data" / "share_embeddings" / "out" / "index.faiss"
 DST = REPO_ROOT / "server" / "artifacts" / "index_sq8.faiss"
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--src", type=Path, default=DEFAULT_SRC,
+                    help="원본 index.faiss 경로 (기본: data/share_embeddings/out/index.faiss)")
+    SRC = ap.parse_args().src
     print(f"reading {SRC} ...")
     t0 = time.time()
     src_idx = faiss.read_index(str(SRC))
