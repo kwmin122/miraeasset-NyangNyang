@@ -1,7 +1,7 @@
 import re
 
 import hcx
-from plan import answer_with_plan, evidence_only_answer
+from plan import answer_with_plan, evidence_only_answer, FALLBACK_HEAD
 from verify import check_dates
 from attribute import parse_ev, check_grounding, check_hedging, trace_note
 
@@ -94,7 +94,7 @@ def attach_sources(text, context, limit=12):
     return text.rstrip() + "\n\n근거: " + " / ".join(out)
 
 
-# ── 위험 표현 차단 (B4: 과제소개자료 p.5 금지 조항 직격 2계열) ──────────────
+# ── 위험 표현 차단 (B4: 과제소개자료 p.5 금지 조항 직격 4계열) ──────────────
 #
 # 프롬프트(GUARD_RULES)로 막았는데 라이브에서 두 번 샜다:
 #   T5-C-010   "SK하이닉스의 공식 발표나 보도자료를 참고하시는 것을 권장 드립니다."
@@ -119,6 +119,22 @@ _BAN_EXT_REC = re.compile(
 _BAN_EVAL = re.compile(
     r"입지를\s*(더욱\s*)?(공고히|굳건히|굳히|강화)|"
     r"(선도적|독보적|압도적)(인)?\s*(지위|위상|입지)")
+# (c) 투자 조언 (B4, J-12 실측): 거절문 끝에 "기업의 미래를 긍정적으로 바라보며,
+#     장기적인 관점에서 투자를 이어가는 것이 중요합니다"가 붙었다. 외부 출처
+#     안내(a)도 평가성 수식(b)도 아니라 둘 다 비껴갔다 — p.5 '공시에 근거 없는
+#     투자 의견 생성' 직격. 실측된 꼴만 좁게: 조언 화제(투자를 이어가/투자 판단/
+#     장기적 관점에서)와 권유·당위 어미가 한 문장에 같이 있을 때만.
+#     '투자판단'은 '투자판단 관련 주요경영사항'이 공시 종류명이라(_ATK_ADVICE
+#     주석과 같은 함정) 바로 뒤에 '관련'이 오면 화제로 치지 않는다.
+_BAN_ADV_TOPIC = re.compile(r"투자를\s*이어가|투자\s*판단(?!\s*관련)|장기적인?\s*관점에서")
+_BAN_ADV_REC = re.compile(r"중요합니다|바람직합니다|권장|권합니다|권해\s*드")
+# (d) 근거 없는 전망: '~됩니다'형 전망 단정. '예상됩니다'는 공시 원문에도 흔해서
+#     (실적 전망 공시 인용 등) 단독으론 못 지우고, 근거 원문에 같은 어간의 전망
+#     서술이 전혀 없을 때만 지운다(_BAN_EVAL 과 같은 ctx 대조). 원문은 문어체
+#     ('예상됨'·'예상되며'·'예상된다')가 많아 답변이 합니다체로 옮긴 것도 인용으로
+#     봐야 하므로, 표면형 일치가 아니라 어간+활용형('예상되/됨/된/될/됩/돼')으로
+#     대조한다. 명사꼴('예상 금액')만 있는 원문은 전망 서술이 아니라서 면제가 아니다.
+_BAN_FORECAST = re.compile(r"(전망|예상)됩니다")
 
 
 def _banned(sent, ctx_flat):
@@ -126,6 +142,11 @@ def _banned(sent, ctx_flat):
         return True
     m = _BAN_EVAL.search(sent)
     if m and re.sub(r"\s+", "", m.group(0)) not in ctx_flat:
+        return True
+    if _BAN_ADV_TOPIC.search(sent) and _BAN_ADV_REC.search(sent):
+        return True
+    m = _BAN_FORECAST.search(sent)
+    if m and not re.search(m.group(1) + r"[되돼된됨될됩]", ctx_flat):
         return True
     return False
 
@@ -285,13 +306,16 @@ def _answer_question(question):
     #
     # 대체 경로는 code_plan -> execute -> 근거 원문 인용이다. 생성 호출 0회로 끝나고
     # 이미 모은 근거를 버리지 않는다.
+    # 이 답변은 근거 나열이지 완결된 답이 아니다. 고지 없이 내보내면 답인 척한다 —
+    # A6 입구 2 (실측 T2-O-003: validate 반려 -> 무고지 원문 덤프). 서두로 밝힌다.
     try:
-        body, ctx, tr = evidence_only_answer(question)
+        body, ctx, tr = evidence_only_answer(question, FALLBACK_HEAD)
     except Exception:  # noqa: BLE001 - 폴백은 어떤 경우에도 답을 내야 한다
         body, ctx, tr = None, "", ["근거 수집 실패"]
     if body:
         return clean({"answer": body, "retrieved_context": ctx,
-                      "think_trace": f"[플래너 실패: {why}] -> 코드 경로 / " + " / ".join(tr)})
+                      "think_trace": f"[플래너 실패: {why}] -> 코드 경로(한계 고지 서두) / "
+                                     + " / ".join(tr)})
 
     return {"answer": "질문하신 내용은 제공된 공시에서 확인되지 않습니다. "
                       "기업명과 연도, 찾으시는 항목을 함께 적어 다시 물어봐 주세요.",
