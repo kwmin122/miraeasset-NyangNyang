@@ -15,7 +15,9 @@ venv/
 # OS
 .DS_Store
 logs/
-docs/*.pdf
+# 참고 자료 PDF만 제외 — 제출용 기술제안서 PDF는 올라가야 하므로 개별 지정한다.
+docs/(배포용)과제소개자료_공시Agent.pdf
+docs/0.네이버클라우드_서비스소개.pdf
 evalset/results_*.jsonl
 
 # S6 다이어트 산출물 — 대용량 바이너리(sqlite 1.19GB가 GitHub 100MB 한도 초과, git-lfs 미도입).
