@@ -58,6 +58,23 @@ print(r.json())   # question_id, question, retrieved_context, think_trace, answe
 | 재부팅 자동 복구 | `/health` 36s, `/ready` 87s (`--restart unless-stopped` + `@reboot` 자동 예열) |
 | 컨테이너 메모리 | 2.98GB / 3.32GB (OOM 없음, 스왑 2GB 대기) |
 
+## 대용량 제출물 — 임베딩·인덱스 (Google Drive)
+
+과제소개자료 p.8 제출 채널 안내("대용량 제출물은 압축 파일로 범용 클라우드 스토리지
+업로드 후 다운로드 공유 링크 제출")에 따라, 8GB급 임베딩 산출물은 git이 아닌 아래
+링크로 제출한다. GitHub는 100MB를 넘는 단일 파일을 받지 않는다.
+
+**https://drive.google.com/drive/folders/1zhb-HF2fI0vGDEOwWY-q5Y2d9R6SveJJ**
+
+| 파일 | 내용 |
+|---|---|
+| `share_embeddings_v2.zip` | 임베딩·인덱스 산출물 압축본 |
+| 사용법 (Markdown) | 압축 해제 후 배치 경로와 사용 방법 |
+
+배치 경로는 아래 [처음 세팅](#처음-세팅-팀원-온보딩--위에서-아래로-그대로) 2번과 같다.
+**평가용 API 서버(`http://49.50.143.160/answer`)에는 이 산출물이 이미 배치되어 동작
+중이므로, 평가를 위해 별도로 내려받을 필요는 없다.** 재현·검증용 자료다.
+
 ## 팀원용 — 지금 상태와 각자 할 일
 
 **현재 상태판은 [`docs/CONTEXT.md`](docs/CONTEXT.md) 하나만 보면 된다** (뭐가 동작하고, 뭐가 문제고, 왜 그렇게 결정했는지). 요약:
@@ -65,7 +82,7 @@ print(r.json())   # question_id, question, retrieved_context, think_trace, answe
 - 서버는 4GB 대회 스펙에서 검증 완료, 평가셋 58문 + 자동 채점기 완비. HCX 연동 기준선 26/38 (S5b, S11·S12 신규 20문 미측정 — 폴백은 17/38).
 - **선우**: 아래 [에이전트 모드](#에이전트-모드-env의-agent_mode)의 계약대로 `sunwoo_agent.py`를 구현하면 꽂힌다. 완성되면 같은 58문으로 baseline과 성적 대조 → 높은 쪽으로 제출. 튜닝은 `evalset/questions_v1.jsonl`(dev 58문)로만 — **별도 blind 14문이 비공개로 있고(과적합 검증용, 민경욱 보관) 제출 모드 결정 때만 투입된다.** S10 고난도 8문에 이어 S11·S12에서 복합질의 20문 추가(전건조회+최대값·recency·조건필터·동일일자 분리·시계열비교·교차비교·정정추적) — v2 튜닝은 이 복합질의가 핵심.
 - **명섭**: `docs/CONTEXT.md`의 "알려진 문제" #1~#3이 명섭 몫 — ① LIG넥스원 옛 사명 검색 실패 ② chunk_id 중복 11,048건 ③ correction_map `superseded_by` 리스트값 599건.
-- 코퍼스·임베딩(`data/`)은 git에 없다 — 민경욱에게 받아서 아래 경로에 복사.
+- 코퍼스·임베딩(`data/`)은 git에 없다 — 위 [대용량 제출물](#대용량-제출물--임베딩인덱스-google-drive) 링크에서 받아 아래 경로에 복사.
 
 ## 처음 세팅 (팀원 온보딩 — 위에서 아래로 그대로)
 
