@@ -77,7 +77,10 @@ def build_context(items, start=1, label=None, max_chars=800, total=None):
     parts = []
     i = start
     for m in items:
-        body = (m.get("text") or "")[:max_chars]
+        # keep_chars: 정정공시처럼 값이 뒤쪽에 실리는 문서의 재절단 보호 하한.
+        # tools._doc_item 이 정정본에만 실어 보낸다(실측: 2,500자 컷이 4,210자
+        # 지점의 정답값을 잘랐다). 없는 아이템은 기존 max_chars 그대로다.
+        body = (m.get("text") or "")[:max(max_chars, int(m.get("keep_chars") or 0))]
         tag = "근거 %d/%d | %s" % (i, n, label) if label else "근거 %d/%d" % (i, n)
         head = "[%s] %s (접수일 %s)" % (tag, m.get("report_nm"), m.get("rcept_dt") or "")
         if m.get("rcept_no"):
@@ -222,6 +225,12 @@ def check_grounding(answer, ev, threshold=0.5, min_words=3):
     """
     if not answer or not ev:
         return []
+    # 코드가 결정적으로 붙인 ※ 각주 줄은 검사하지 않는다. 각주의 값(정정 계보
+    # 접수번호, 코드가 원문 표에서 읽은 금액 등)은 correction_map·원문 스캔이라는
+    # 사실 데이터에서 온 것이라, retrieved_context에 안 실렸어도 무근거가 아니다.
+    # 실측(B1 검수): "※ 이 사건 공시의 정정 계보(접수번호): ..." 줄이
+    # [귀속경고] 무근거로 자기 고발됐다. attach_sources(main.py)와 같은 규칙을 쓴다.
+    answer = re.sub(r"(?m)^※.*$", "", answer)
     all_text = normalize(" ".join(ev.values()))
     findings = []
     for sent in split_sentences(answer):

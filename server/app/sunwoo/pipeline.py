@@ -94,10 +94,85 @@ def attach_sources(text, context, limit=12):
     return text.rstrip() + "\n\n근거: " + " / ".join(out)
 
 
+# ── 위험 표현 차단 (B4: 과제소개자료 p.5 금지 조항 직격 2계열) ──────────────
+#
+# 프롬프트(GUARD_RULES)로 막았는데 라이브에서 두 번 샜다:
+#   T5-C-010   "SK하이닉스의 공식 발표나 보도자료를 참고하시는 것을 권장 드립니다."
+#              — 제공 코퍼스 밖으로 안내 (p.5: 제공 코퍼스 외 데이터 사용 불가)
+#   TR-ATK-004 "시장에서의 입지를 더욱 공고히 했습니다."
+#              — 공시에 없는 평가성 수식 (p.5: 공시에 근거 없는 의견 생성 금지)
+# 프롬프트로 안 되면 코드가 끊는다. 문장 단위로만 제거하고 나머지는 보존한다.
+# 오탐이 미탐보다 비싸다 — 패턴은 좁게 잡는다(가드의 _ATK_ADVICE 와 같은 원칙).
+#
+# (a) 코퍼스 밖 참조 권유: '외부 출처 명사'와 '독자에게 권하는 어미'가 한 문장에
+#     같이 있을 때만. 공시 원문이 사실로 서술한 "홈페이지에 게시하였습니다" 류는
+#     권유 어미가 없어 안 걸린다.
+_BAN_EXT_SRC = re.compile(
+    r"공식\s*(발표|사이트|채널|블로그)|보도\s*자료|홈\s*페이지|홈페이지|"
+    r"웹\s*사이트|웹사이트|뉴스|언론")
+_BAN_EXT_REC = re.compile(
+    r"(참고|참조|확인|문의|방문)\s*하[시셔]|해\s*보시|"
+    r"(권장|권유|추천)\s*(을\s*)?드립니다|권해\s*드립니다|바랍니다")
+# (b) 평가성 수식: 실측 2계열만. '선도적' 단독은 공시 원문에도 흔해서 안 잡고,
+#     지위·위상 명사와 붙은 꼴만 잡는다. 근거 원문에 그 표현이 그대로 있으면
+#     인용이므로 지우지 않는다(_strip_banned 의 ctx 대조).
+_BAN_EVAL = re.compile(
+    r"입지를\s*(더욱\s*)?(공고히|굳건히|굳히|강화)|"
+    r"(선도적|독보적|압도적)(인)?\s*(지위|위상|입지)")
+
+
+def _banned(sent, ctx_flat):
+    if _BAN_EXT_SRC.search(sent) and _BAN_EXT_REC.search(sent):
+        return True
+    m = _BAN_EVAL.search(sent)
+    if m and re.sub(r"\s+", "", m.group(0)) not in ctx_flat:
+        return True
+    return False
+
+
+def strip_banned(text, ctx=""):
+    """위험 표현이 든 문장만 빼고 나머지는 그대로 둔다. 반환 (text, 제거 문장 목록).
+
+    코드가 붙인 줄(※ 각주, '근거:' 꼬리)은 건드리지 않는다.
+    제거로 답변이 통째로 비면 표준 부재 답변으로 대체한다 — 빈 답변은 무응답이고,
+    위험 문장을 남기는 것보다 부재 고지가 낫다.
+    """
+    if not text:
+        return text, []
+    ctx_flat = re.sub(r"\s+", "", ctx or "")
+    removed, out_lines = [], []
+    for line in text.split("\n"):
+        ls = line.lstrip()
+        if ls.startswith("※") or ls.startswith("근거:"):
+            out_lines.append(line)
+            continue
+        kept, hit = [], False
+        for sent in re.split(r"(?<=[.!?])\s+", line):
+            if sent.strip() and _banned(sent, ctx_flat):
+                removed.append(sent.strip())
+                hit = True
+            else:
+                kept.append(sent)
+        if not hit:
+            out_lines.append(line)          # 제거 없는 줄은 원형 그대로
+        elif any(s.strip() for s in kept):
+            out_lines.append(" ".join(kept).strip())
+    if not removed:
+        return text, []
+    out = re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).strip()
+    if len(out) < 5:
+        out = "질문하신 내용은 제공된 공시에서 확인되지 않습니다."
+    return out, removed
+
+
 def clean(r):
     """모든 유형이 이 출구를 거친다. 후처리와 검증을 여기 한 곳에만 둔다."""
     if r.get("answer"):
         r["answer"] = re.sub(r"\*+", "", r["answer"])
+        r["answer"], _cut = strip_banned(r["answer"], r.get("retrieved_context", ""))
+        if _cut:
+            r["think_trace"] += (" -> [표현차단] %d문장 제거: " % len(_cut)
+                                 + " / ".join("'%s'" % c[:30] for c in _cut[:3]))
         r["answer"] = unify_units(r["answer"], r.get("retrieved_context", ""))
         r["answer"] = attach_sources(r["answer"], r.get("retrieved_context", ""))
 

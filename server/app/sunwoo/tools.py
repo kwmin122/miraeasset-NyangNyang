@@ -95,15 +95,30 @@ def _doc_body(d, budget):
 def _doc_item(d, orig=None, budget=2500, note=None):
     orig = orig or d
     fixed = d["rcept_no"] != orig["rcept_no"]
+    if d.get("is_correction"):
+        # 정정공시는 앞부분이 '정정 전/정정 후' 대조표로 채워져 실제 내역이 한참
+        # 뒤에 온다. 실측(다중질의 세션, gold 20250527000422 카카오 전환사채):
+        # 정답값 50,182,840,320 이 본문 4,210자 지점이라 2,500자 컷에 통째로
+        # 잘렸고 같은 문항이 3/5·2/5 를 오가는 코인플립이 됐다. 정정본만 7,000자
+        # 까지 읽으니 2회 연속 안정. 일반 문서는 그대로 둔다(컨텍스트 폭주 방지 —
+        # budget 확대는 HCX 입력을 늘려 비용·지연을 먹는다). 판별은 group_chains
+        # (slice4)와 같은 manifest 의 is_correction 을 쓴다.
+        budget = max(budget, 7000)
     sp = note
     if sp and fixed:
         sp = (f"{sp}. 본문은 {d['rcept_dt']}에 접수된 최신 정정본이다")
     elif sp is None and fixed:
         sp = (f"이 건은 {orig['rcept_dt']}에 공시된 사건이다. "
               f"본문은 {d['rcept_dt']}에 접수된 최신 정정본이다")
-    return {"text": _doc_body(d, budget), "report_nm": d["report_nm"],
-            "rcept_dt": orig["rcept_dt"], "rcept_no": d["rcept_no"],
-            "corp_name": d.get("corp_name"), "section_path": sp}
+    it = {"text": _doc_body(d, budget), "report_nm": d["report_nm"],
+          "rcept_dt": orig["rcept_dt"], "rcept_no": d["rcept_no"],
+          "corp_name": d.get("corp_name"), "section_path": sp}
+    if d.get("is_correction"):
+        # build_context(attribute.py)가 max_chars 로 다시 자르면 여기서 늘린
+        # 예산이 무효가 된다(플래너 합성 경로의 max_chars 는 700~3,000).
+        # 정정본만 재절단에서 보호하는 하한을 아이템에 실어 보낸다.
+        it["keep_chars"] = budget
+    return it
 
 
 def chain_of(d):
