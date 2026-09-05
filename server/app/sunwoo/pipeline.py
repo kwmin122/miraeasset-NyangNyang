@@ -200,12 +200,21 @@ def strip_banned(text, ctx=""):
 #
 #   패스 1  라벨에 붙은 값        "생년월일: 1969년 05월 02일"
 #   패스 2  표의 생년월일 열      헤더 셀 위치를 찾아 그 칸만
-#   패스 3  남은 완전한 날짜      업무 날짜 낱말이 같은 줄에 있으면 건너뜀
+#   패스 3  표 아래 되풀이        패스 2 가 가린 행의 성명이 같은 줄에 있을 때만
 #
-# 날짜 모양을 보는 건 패스 3뿐이다. 위험해 보이는 게 맞지만 여기까지 온 문서는
-# 이미 인적사항 답변이고, 그 안에서도 '설립·체결·해지·주주총회·공시…' 가 같은
-# 줄에 있으면 비켜간다. 연-월-일이 다 갖춰진 것만 잡으므로 "2024년 반기보고서",
-# "2024년 3분기" 같은 표기는 애초에 걸리지 않는다.
+# 날짜 모양을 보는 건 패스 3뿐이고 여기가 제일 위험한 자리다. 그래서 사정거리를
+# 두 겹으로 묶었다. 첫째, **패스 2 가 실제로 가린 표 행의 '성명' 칸 값**만 앵커로
+# 삼아 그 이름이 같은 줄에 있을 때만 손댄다 — 성명 열이 없는 표거나 가린 행이
+# 없으면 패스 3은 통째로 아무 일도 하지 않는다. 둘째, 앵커를 통과해도 업무 날짜
+# 낱말이 같은 줄에 있으면 비켜간다.
+#
+# 앵커를 둔 이유는 추측이 아니라 실측이다. 58문 답변 3런에서 완전한 연-월-일을
+# 담은 줄이 743개였는데 그중 165개가 "2023.08.01", "- 시작일: 2024-04-24",
+# "1. 2024년 1월 29일" 처럼 업무 낱말이 **아예 없는** 알몸 날짜였다. 낱말 목록을
+# 늘리는 방식으로는 이런 줄에 영영 닿지 못한다. 반면 그 165개 중 마스킹된 성명이
+# 같은 줄에 있는 것은 하나도 없다 — 앵커는 닿고 낱말 목록은 못 닿는다.
+# 연-월-일이 다 갖춰진 것만 잡으므로 "2024년 반기보고서", "2024년 3분기" 같은
+# 표기는 애초에 걸리지 않는다.
 #
 # retrieved_context 는 손대지 않는다. 근거 원문은 심사가 검증하는 대상이라
 # 코드가 고쳐 보이면 안 된다 — 가리는 건 우리가 말하는 답변 쪽이다.
@@ -222,17 +231,25 @@ _DATE_ANY = re.compile(_YMD)
 _BIZ_DATE = re.compile(
     "설립|체결|해지|해제|취득|처분|만기|만료|개시|종료|주주총회|이사회|공시|제출"
     "|접수|기준일|결산|상장|발행|납입|지급|계약|거래|인수|합병|분할|공고|신고"
-    "|보고서|승인|출시|준공|착공|등기")
+    "|보고서|승인|출시|준공|착공|등기|선임|시작일|선정일자|투자기간")
+
+# 패스 3 의 앵커는 여기서만 나온다. 성명 열이 없으면 앵커도 없다.
+_NAME_HEAD = re.compile("성\\s*명|이\\s*름")
 
 
 def _mask_table(text):
-    """마크다운 표에서 '생년월일' 열의 칸만 가린다. 반환 (text, 건수)."""
+    """마크다운 표에서 '생년월일' 열의 칸만 가린다.
+
+    반환 (text, 건수, 앵커). 앵커는 **실제로 가린 행의 '성명' 칸 값**이고
+    패스 3 이 사정거리를 좁히는 데만 쓴다. 성명 열이 없는 표면 빈 집합이다.
+    """
     lines = text.split("\n")
-    col = ncell = None
+    col = name_col = ncell = None
     n = 0
+    anchors = set()
     for i, ln in enumerate(lines):
         if "|" not in ln:
-            col = None                      # 표가 끝났다
+            col = name_col = None           # 표가 끝났다
             continue
         cells = ln.split("|")
         if col is None:                     # 아직 헤더를 못 찾았다
@@ -240,27 +257,41 @@ def _mask_table(text):
                 if "생년월일" in c:
                     col, ncell = j, len(cells)
                     break
+            if col is not None:             # 같은 헤더에서 성명 열도 집는다
+                for j, c in enumerate(cells):
+                    if j != col and _NAME_HEAD.search(c):
+                        name_col = j
+                        break
             continue
         if len(cells) != ncell:             # 열 수가 다르면 다른 표다
-            col = None
+            col = name_col = None
             continue
         if col < len(cells) and _DATE_CELL.fullmatch(cells[col]):
             cells[col] = " %s " % _PII_MASK
             lines[i] = "|".join(cells)
             n += 1
-    return "\n".join(lines), n
+            if name_col is not None and name_col < len(cells):
+                nm = cells[name_col].strip()
+                if len(nm) >= 2 and not _DATE_ANY.search(nm):
+                    anchors.add(nm)
+    return "\n".join(lines), n, anchors
 
 
-def _mask_residual(text):
+def _mask_residual(text, anchors):
     """표 아래 되풀이처럼 라벨을 잃은 날짜를 가린다. 반환 (text, 건수).
 
-    호출부가 이미 '생년월일' 게이트를 통과시킨 뒤라 여기 오는 건 인적사항
-    답변뿐이다. 그래도 업무 날짜가 섞일 수 있으니 줄 단위로 한 번 더 거른다.
+    "- 박정호: 1974.10.19" 처럼 표 밖으로 새어 나온 되풀이만 노린다. 앵커
+    (패스 2 가 가린 행의 성명)가 같은 줄에 있어야 손대므로, 앵커가 없으면
+    이 함수는 아무 일도 하지 않고 원문을 그대로 돌려준다.
     """
+    if not anchors:
+        return text, 0
     lines = text.split("\n")
     n = 0
     for i, ln in enumerate(lines):
         if ln.lstrip().startswith(("※", "근거:")) or _BIZ_DATE.search(ln):
+            continue
+        if not any(a in ln for a in anchors):
             continue
         lines[i], k = _DATE_ANY.subn(_PII_MASK, ln)
         n += k
@@ -276,9 +307,9 @@ def mask_pii(text):
     if not text or "생년월일" not in text:
         return text, 0
     out, n = _BIRTH.subn(lambda m: m.group(1) + m.group(2) + _PII_MASK, text)
-    out, k = _mask_table(out)
+    out, k, anchors = _mask_table(out)
     n += k
-    out, k = _mask_residual(out)
+    out, k = _mask_residual(out, anchors)
     n += k
     if not n:
         return text, 0
